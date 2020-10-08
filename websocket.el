@@ -859,9 +859,13 @@ This also takes a plist of callbacks: `:on-open', `:on-message',
 `:on-close' and `:on-error', which operate exactly as documented
 in the websocket client function `websocket-open'.  Returns the
 connection, which should be kept in order to pass to
-`websocket-server-close'."
+`websocket-server-close'.
+
+PLIST can also contain `:process-name', a string to name the
+process."
   (let* ((conn (make-network-process
-                :name (format "websocket server on port %s" port)
+                :name (or (plist-get plist :process-name)
+                          (format "websocket server on port %s" port))
                 :server t
                 :family 'ipv4
                 :noquery t
@@ -901,8 +905,8 @@ connection, which should be kept in order to pass to
                            (setq websocket-server-websockets
                                  (remove ws websocket-server-websockets))
                            (funcall user-method ws)))
-             :on-error (or (process-get server :on-error)
-                           'websocket-default-error-handler)
+             :on-error (or (process-get server :on-error) 
+                          'websocket-default-error-handler)
              :protocols (process-get server :protocol)
              :extensions (mapcar 'car (process-get server :extensions)))))
     (unless (member ws websocket-server-websockets)
