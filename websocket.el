@@ -74,7 +74,7 @@ subprocess.  There may, in fact, be output data buffered,
 however, when the `on-message' or `on-close' callbacks are
 called.
 
-`on-open', `on-message', `on-close', and `on-error' are described
+`on-open', `on-message', `on-close' are described
 in `websocket-open'.
 
 The `negotiated-extensions' slot lists the extensions accepted by
@@ -86,7 +86,6 @@ same for the protocols."
   on-open
   on-message
   on-close
-  on-error
   negotiated-protocols
   negotiated-extensions
   (server-p nil :read-only t)
@@ -113,12 +112,6 @@ URL of the connection.")
   "The websocket GUID as defined in RFC 6455.
 Do not change unless the RFC changes.")
 
-(defvar websocket-callback-debug-on-error nil
-  "If true, when an error happens in a client callback, invoke the debugger.
-Having this on can cause issues with missing frames if the debugger is
-exited by quitting instead of continuing, so it's best to have this set
-to nil unless it is especially needed.")
-
 (defmacro websocket-document-function (function docstring)
   "Document FUNCTION with DOCSTRING.  Use this for defstruct accessor etc."
   (declare (indent defun)
@@ -143,12 +136,6 @@ See `websocket-open' for details.
 
 \(fn WEBSOCKET)")
 
-(websocket-document-function websocket-on-error
-  "Accessor for websocket on-error callback.
-See `websocket-open' for details.
-
-\(fn WEBSOCKET)")
-
 (defun websocket-genbytes (nbytes)
   "Generate NBYTES random bytes."
   (let ((s (make-string nbytes ?\s)))
@@ -156,27 +143,10 @@ See `websocket-open' for details.
       (aset s i (random 256)))
     s))
 
-(defun websocket-try-callback (websocket-callback callback-type websocket
+(defun websocket-try-callback (websocket-callback _callback-type websocket
                                                   &rest rest)
-  "Invoke function WEBSOCKET-CALLBACK with WEBSOCKET and REST args.
-If an error happens, it is handled according to
-`websocket-callback-debug-on-error'."
-  ;; This looks like it should be able to done more efficiently, but
-  ;; I'm not sure that's the case.  We can't do it as a macro, since
-  ;; we want it to change whenever websocket-callback-debug-on-error
-  ;; changes.
-  (let ((args rest)
-        (debug-on-error websocket-callback-debug-on-error))
-    (push websocket args)
-    (if websocket-callback-debug-on-error
-        (condition-case err
-            (apply (funcall websocket-callback websocket) args)
-          ((debug error) (funcall (websocket-on-error websocket)
-                                  websocket callback-type err)))
-      (condition-case err
-          (apply (funcall websocket-callback websocket) args)
-        (error (funcall (websocket-on-error websocket) websocket
-                        callback-type err))))))
+  "Invoke function WEBSOCKET-CALLBACK with WEBSOCKET and REST args."
+  (apply (funcall websocket-callback websocket) websocket rest))
 
 (defun websocket-genkey ()
   "Generate a key suitable for the websocket handshake."
@@ -593,8 +563,7 @@ the `websocket-error' condition."
                     :extensions (websocket-extensions websocket)
                     :on-open (websocket-on-open websocket)
                     :on-message (websocket-on-message websocket)
-                    :on-close (websocket-on-close websocket)
-                    :on-error (websocket-on-error websocket))))
+                    :on-close (websocket-on-close websocket))))
 
 ;;;;;;;;;;;;;;;;;;;;;;
 ;; Websocket client ;;
@@ -602,7 +571,6 @@ the `websocket-error' condition."
 
 (cl-defun websocket-open (url &key protocols extensions (on-open 'identity)
                               (on-message (lambda (_w _f))) (on-close 'identity)
-                              (on-error 'websocket-default-error-handler)
                               (nowait nil) (custom-header-alist nil))
   "Open a websocket connection to URL, returning the `websocket' struct.
 The PROTOCOL argument is optional, and setting it will declare to
@@ -637,17 +605,6 @@ unused.
 The ON-CLOSE callback is called after the connection is closed, or
 failed to open.  It is called with the websocket as the only
 argument, and the return value is unused.
-
-The ON-ERROR callback is called when any of the other callbacks
-have an error.  It takes the websocket as the first argument, and
-a symbol as the second argument either `on-open', `on-message',
-or `on-close', and the error as the third argument. Do NOT
-rethrow the error, or else you may miss some websocket messages.
-You similarly must not generate any other errors in this method.
-If you want to debug errors, set
-`websocket-callback-debug-on-error' to t, but this also can be
-dangerous is the debugger is quit out of.  If not specified,
-`websocket-default-error-handler' is used.
 
 For each of these event handlers, the client code can store
 arbitrary data in the `client-data' slot in the returned
@@ -708,7 +665,6 @@ to the websocket protocol.
                      :on-open on-open
                      :on-message on-message
                      :on-close on-close
-                     :on-error on-error
                      :protocols protocols
                      :extensions (mapcar 'car extensions)
                      :accept-string
@@ -776,16 +732,15 @@ connection is invalid, the connection will be closed."
     (when (and (eq 'connecting (websocket-ready-state websocket)))
       (if (and (setq header-end-pos (string-match "\r\n\r\n" text))
                (setq start-point (+ 4 header-end-pos)))
-          (progn
-            (condition-case err
+          (let (success)
+            (unwind-protect
                 (progn
                   (websocket-verify-response-code text)
                   (websocket-verify-headers websocket text)
-                  (websocket-process-headers (websocket-url websocket) text))
-              (error
-               (websocket-close websocket)
-               (funcall (websocket-on-error websocket)
-                        websocket 'on-open err)))
+                  (websocket-process-headers (websocket-url websocket) text)
+                  (setq success t))
+              (unless success
+                (websocket-close websocket)))
             (setf (websocket-ready-state websocket) 'open)
             (websocket-try-callback 'websocket-on-open 'on-open websocket))
         (setf (websocket-inflight-input websocket) text)))
@@ -856,7 +811,7 @@ used to configure the addresses the socket listens on. The symbol
 socket will listen on all addresses.
 
 This also takes a plist of callbacks: `:on-open', `:on-message',
-`:on-close' and `:on-error', which operate exactly as documented
+`:on-close', which operate exactly as documented
 in the websocket client function `websocket-open'.  Returns the
 connection, which should be kept in order to pass to
 `websocket-server-close'.
@@ -905,8 +860,6 @@ process."
                            (setq websocket-server-websockets
                                  (remove ws websocket-server-websockets))
                            (funcall user-method ws)))
-             :on-error (or (process-get server :on-error) 
-                          'websocket-default-error-handler)
              :protocols (process-get server :protocol)
              :extensions (mapcar 'car (process-get server :extensions)))))
     (unless (member ws websocket-server-websockets)
