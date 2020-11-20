@@ -193,9 +193,11 @@ Each function is called with a single
                                    (json-parse-buffer
                                     :object-type 'plist))))))
                    (setq proc (get-buffer-process buffer))
-                   (while t (accept-process-output proc 10)))
+                   (while (process-live-p proc)
+                     (accept-process-output proc 10)))
                (cancel-timer timer)
-               (when proc (delete-process proc)))))))
+               (when proc (delete-process proc))
+               `(:error "process probably died"))))))
     (let ((err (plist-get res :error))) 
       (when err (nih--error "Getting %s resulted in %S" path err)))
     res))
@@ -379,21 +381,26 @@ is t."
          (format "*NIH inferior: %S*"
                  (mapconcat #'identity command-and-args " ")))
       (let ((inhibit-read-only t)) (erase-buffer))
-      (apply #'start-process
-             (format "nih-%s" (car command-and-args)) (current-buffer) 
-             (car command-and-args) (cdr command-and-args))
-      (setq proc (get-buffer-process (current-buffer)))
+      (setq proc
+            (apply #'start-process
+                   (format "nih-%s" (car command-and-args)) (current-buffer)
+                   (car command-and-args) (cdr command-and-args)))
       (process-put proc 'nih-inferior-lisp-process t)
       (set-process-sentinel proc #'nih--kill-if-dead)
       (set-process-query-on-exit-flag proc t)
-      (while (null host)
-        (accept-process-output proc 1)
-        (goto-char (point-min))
-        (when (search-forward-regexp
-               "wss?://\\(localhost\\|127.0.0.1\\):\\([0-9]+\\)/"
-               nil t)
-          (setq host (substring-no-properties (match-string 1))
-                port (string-to-number (match-string 2)))))
+      (cl-loop repeat 5
+               while (and (process-live-p proc)
+                          (null host))
+               do
+               (accept-process-output proc 1)
+               (goto-char (point-min))
+               (when (search-forward-regexp
+                      "wss?://\\(localhost\\|127.0.0.1\\):\\([0-9]+\\)/"
+                      nil t)
+                 (setq host (substring-no-properties (match-string 1))
+                       port (string-to-number (match-string 2)))))
+      (unless host
+        (nih--error "Couldn't start %s" (car command-and-args)))
       (process-put proc 'nih-host-and-port
                    (list host port))
       (process-put proc 'nih-command-name
@@ -489,7 +496,12 @@ select from the minibuffer."
                       (throw 'done new-connection))
                     :on-message #'nih--on-websocket-message
                     :on-close   #'nih--on-websocket-close))
-             (while t (accept-process-output (websocket-conn websocket) 1)))))
+             (cl-loop with proc = (websocket-conn websocket)
+                      repeat 5
+                      while (process-live-p proc)
+                      do (accept-process-output proc 1)))))
+    (unless new-connection
+      (nih--error "Couldn't connect to %s" target-url))
     (push new-connection nih--connections)
     (unless nih--default-connection (setq nih--default-connection
                                           new-connection))
