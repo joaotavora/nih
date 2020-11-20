@@ -154,7 +154,7 @@ Each function is called with a single
         (set-default 'nih--default-connection (car nih--connections)))
     ;; Now maybe delete the originating inferior process
     (unless (or (not (setq proc (nih--proc conn)))
-                (not (process-live-p proc))U+
+                (not (process-live-p proc))
                 (cl-find proc nih--connections :key #'nih--proc)
                 (not (y-or-n-p (format "[nih] Also kill process %s?" proc))))
       (delete-process proc))))
