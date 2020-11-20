@@ -379,9 +379,9 @@ is t."
          (format "*NIH inferior: %S*"
                  (mapconcat #'identity command-and-args " ")))
       (let ((inhibit-read-only t)) (erase-buffer))
-      (comint-mode)
-      (comint-exec (current-buffer) (format "nih-%s" (car command-and-args))
-                   (car command-and-args) nil (cdr command-and-args))
+      (apply #'start-process
+             (format "nih-%s" (car command-and-args)) (current-buffer) 
+             (car command-and-args) (cdr command-and-args))
       (setq proc (get-buffer-process (current-buffer)))
       (process-put proc 'nih-inferior-lisp-process t)
       (set-process-sentinel proc #'nih--kill-if-dead)
