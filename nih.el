@@ -543,6 +543,16 @@ elements of `nih-host-programs'."
        target
        interactive))))
 
+
+;;;; Utils
+(cl-defmacro nih--dbind (((_interface) &rest syms) object &body body)
+  "Destructure OBJECT, binding VARS in BODY.
+INTERFACE is a type described in chromedevtools.github.io.
+SYMS are keys of that type."
+  (declare (indent 2) (debug (sexp sexp &rest form)))
+  `(cl-destructuring-bind
+       (&key ,@syms &allow-other-keys) ,object
+     ,@body))
 
 
 ;;;; repl
@@ -657,15 +667,35 @@ for some reason."
 (cl-defun nih--repl-input-sender (proc string &aux success)
   "Send STRING to PROC."
   (unwind-protect
-      (cl-destructuring-bind (&key _type _id preview &allow-other-keys)
+      (cl-destructuring-bind (&key result exceptionDetails)
           (jsonrpc-request (process-get proc 'nih--connection)
                            :Runtime.evaluate
                            `(:expression
                              ,(substring-no-properties
-                               (string-trim string))))
-        (comint-output-filter
-         proc
-         (format "%s\n" preview))
+                               (string-trim string))
+                             :replMode t
+                             :generatePreview t))
+        (cond (exceptionDetails
+               (nih--dbind ((Result.RemoteObject) text exception)
+                   exceptionDetails
+                 (nih--repl-insert-note exception)
+                 (comint-output-filter
+                  proc
+                  (propertize (format "%s %s\n" text (plist-get exception
+                                                                :description))
+                              'font-lock-face 'font-lock-warning-face))))
+              (result
+               (nih--dbind ((Result.RemoteObject) _type _id preview description)
+                   result
+                 (nih--repl-insert-note result)
+                 (comint-output-filter
+                  proc
+                  (format "%s\n"
+                          (or (and preview
+                                   (plist-get preview :description))
+                              description)))))
+              (t
+               (nih--error "Unkonwn reply to Runtime.evaluate")))
         (setq success t))
     (unless success
       (nih--repl-insert-note "Something went wrong"))
@@ -739,7 +769,8 @@ for some reason."
 (defun nih--repl-insert-note (string &optional face)
   "Insert a note into the REPL."
   (let* ((face (or face 'nih--repl-note-face))
-         (string (replace-regexp-in-string "^" "// " string)))
+         (string (if (stringp string) string (pp-to-string string)))
+         (string (replace-regexp-in-string "^" "// " (string-trim string))))
     (nih--repl-commiting-text (when face
                                 `(face ,face font-lock-face ,face))
       (cond ((nih--repl-process)
