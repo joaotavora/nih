@@ -508,6 +508,7 @@ select from the minibuffer."
     (push new-connection nih--connections)
     (unless nih--default-connection (setq nih--default-connection
                                           new-connection))
+    (jsonrpc-request new-connection :Runtime.enable nil)
     (run-hook-with-args 'nih-connected-hook new-connection)))
 
 (defun nih-start-target-on-host (_host _port)
@@ -555,10 +556,27 @@ SYMS are keys of that type."
      ,@body))
 
 
+;;;;
+(cl-defmethod nih-handle-notification
+  (_server method &rest args &key &allow-other-keys)
+  "Handle unknown notification"
+  (nih--message "Server sent unknown notification method `%s' with args %S"
+                method
+                args))
+
+
 ;;;; repl
 
 (require 'js)
 (require 'comint)
+
+(defun nih-repl (conn)
+  (interactive (list (nih--current-connection)))
+  (cl-assert conn "No current connection")
+  (let ((repl (nih--repl conn)))
+       (if (and repl (buffer-live-p repl)) (pop-to-buffer repl)
+         (nih-repl-new conn))))
+;; (global-set-key (kbd "C-c C-z") 'nih-repl)
 
 (defvar nih--repl-output-mark nil)
 
@@ -664,6 +682,26 @@ for some reason."
   "Insert the prompt into the NIH REPL."
   (comint-output-filter proc "JS> "))
 
+(defun nih--repl-insert-result (result)
+  (nih--dbind ((Result.RemoteObject) type objectId value preview description)
+      result
+    (when objectId
+      (nih--repl-insert-note (and objectId
+                                  (jsonrpc-request (nih--current-connection)
+                                                   :Runtime.getProperties
+                                                   (list :objectId objectId
+                                                         :ownProperties t
+                                                         :generatePreview t)))))
+    (let ((decent (and preview
+                       (plist-get preview :description))))
+      (comint-output-filter
+       (nih--repl-process)
+       (format "%s\n"
+               (or decent
+                   value
+                   description
+                   type))))))
+
 (cl-defun nih--repl-input-sender (proc string &aux success)
   "Send STRING to PROC."
   (unwind-protect
@@ -685,15 +723,8 @@ for some reason."
                                                                 :description))
                               'font-lock-face 'font-lock-warning-face))))
               (result
-               (nih--dbind ((Result.RemoteObject) _type _id preview description)
-                   result
-                 (nih--repl-insert-note result)
-                 (comint-output-filter
-                  proc
-                  (format "%s\n"
-                          (or (and preview
-                                   (plist-get preview :description))
-                              description)))))
+               (nih--repl-insert-note result)
+               (nih--repl-insert-result result))
               (t
                (nih--error "Unkonwn reply to Runtime.evaluate")))
         (setq success t))
