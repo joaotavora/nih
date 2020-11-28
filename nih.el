@@ -68,7 +68,10 @@ May be augmented with nih-specific fields.")
     (plist-put args :method
                (cond ((keywordp method) (substring (symbol-name method) 1))
                      ((and method (symbolp method)) (symbol-name method)))))
-  (let* ((message `(:jsonrpc "2.0" ,@args))
+  (let* ((message `(;; CDP isn't technically JSONRPC, so don't send
+                    ;; the `:jsonrpc' "2.0" version identifier which
+                    ;; trips up node's server, for example.
+                    ,@args))
          (json (jsonrpc--json-encode message)))
     (with-slots (socket) conn
       (websocket-send-text socket json))
