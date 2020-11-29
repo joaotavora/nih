@@ -584,6 +584,24 @@ SYMS are keys of that type."
                 method
                 args))
 
+(cl-defmethod nih-handle-notification
+  (conn (_method (eql Runtime.consoleAPICalled)) &rest all &key type args
+        &allow-other-keys)
+  (apply #'nih--console-api-call conn (nih--ensure-keyword type) args all))
+
+
+;;;; Console API loggers
+
+(cl-defgeneric nih--console-api-call (conn method args &key &allow-other-keys))
+
+(cl-defmethod nih--console-api-call (conn (_method (eql :log)) args
+                                          &rest whole-call &key &allow-other-keys )
+  (with-current-buffer (nih-repl conn)
+    (nih--message "Would be inserting %s in %s remembering %s"
+                  (plist-get (aref args 0) :value)
+                  (current-buffer)
+                  whole-call)))
+
 
 ;;; Object formatting
 (defun nih--pp-get-remote (remote-object-id)
