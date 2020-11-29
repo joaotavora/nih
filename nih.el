@@ -599,6 +599,7 @@ SYMS are keys of that type."
                 (nih--repl-last-prompt-overlay     . ,(make-overlay 0 0 nil nil))
                 (mode-line-process                 . nil)
                 (parse-sexp-ignore-comments        . t)
+                (syntax-propertize-function        . nih--repl-syntax-propertize)
                 (comint-scroll-show-maximum-output . nil)
                 (comint-scroll-to-bottom-on-input  . nil)
                 (comint-scroll-to-bottom-on-output . nil)
@@ -632,6 +633,18 @@ Mostly a dummy, the only interesting thing is the process mark
 which is the place in the buffer where comint will insert
 output."
   (get-buffer-process (current-buffer)))
+
+(defun nih--repl-syntax-propertize (beg end)
+  "Make everything up to current prompt comment syntax."
+  (remove-text-properties beg end '(syntax-table nil))
+  (let ((end (min end (nih--repl-safe-mark)))
+        (beg beg))
+    (when (> end beg)
+      (unless (nth 8 (syntax-ppss beg))
+        (add-text-properties beg (1+ beg)
+                             `(syntax-table ,(string-to-syntax "!"))))
+      (add-text-properties (1- end) end
+                           `(syntax-table ,(string-to-syntax "!"))))))
 
 (defun nih--repl-teardown (&optional reason)
   "Tear down the NIH REPL.
