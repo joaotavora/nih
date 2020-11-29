@@ -712,6 +712,12 @@ WHOLE is the whole RemoteObject plist.")
                                         :value)))
       (nih--insert "<function>"))))
 
+(cl-defmethod nih--pp-result (_remote-object-id
+                              (_type (eql :undefined))
+                              _subtype
+                              _whole)
+  (nih--insert "undefined"))
+
 
 
 ;;;; repl
