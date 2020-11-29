@@ -567,6 +567,14 @@ SYMS are keys of that type."
         (t
          (error "Can't make %s a keyword" thing))))
 
+(defmacro nih--properly-supressing-message (&rest body)
+  "Geez...  Supress message() calls in BODY."
+  (let ((curr (cl-gensym)))
+    `(let ((,curr (current-message))
+           (message-log-max nil))
+       (let ((inhibit-message t)) ,@body)
+       (if ,curr (message ,curr)))))
+
 
 ;;;;
 (cl-defmethod nih-handle-notification
@@ -647,7 +655,8 @@ WHOLE is the whole RemoteObject plist.")
                  (js-mode)
                  (let ((nih--pp-indent nil))
                    (cl-call-next-method))
-                 (indent-region (point-min) (point-max))
+                 (nih--properly-supressing-message
+                  (indent-region (point-min) (point-max)))
                  (let ((text (buffer-substring
                               (point-min) (point-max)))
                        (ovs (overlays-in (point-min) (point-max))))
