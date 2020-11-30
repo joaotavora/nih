@@ -687,15 +687,14 @@ WHOLE is the whole RemoteObject plist.")
                                      (current-buffer)))))))
               (t (cl-call-next-method)))
       (when remote-object-id
-        (let ((ov (make-overlay beg (point))))
-          (overlay-put ov 'nih--remote-object whole)
-          (overlay-put ov 'help-echo
-                       (format "mouse-2, RET: Inspect %s %s"
-                               (or (plist-get whole :subtype)
-                                   (plist-get whole :type))
-                               remote-object-id))
-          (overlay-put ov 'mouse-face 'highlight)
-          ov)))))
+        (make-button beg (point)
+                     'face nil
+                     'nih--remote-object whole
+                     'help-echo
+                     (format "mouse-2, RET: Inspect %s %s"
+                             (or (plist-get whole :subtype)
+                                 (plist-get whole :type))
+                             remote-object-id))))))
 
 (cl-defmethod nih--pp-result (remote-object-id
                               (_type (eql :object))
