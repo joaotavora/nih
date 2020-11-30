@@ -700,13 +700,17 @@ WHOLE is the whole RemoteObject plist.")
                               (_type (eql :object))
                               (_subtype (eql :array))
                               whole)
-  (nih--pp-object remote-object-id whole t "[" "]"))
+  (if remote-object-id
+      (nih--pp-object remote-object-id whole t "[" "]")
+    (nih--insert "Array")))
 
 (cl-defmethod nih--pp-result (remote-object-id
                               (_type (eql :object))
                               _subtype
                               whole)
-  (nih--pp-object remote-object-id whole nil "{ " " }"))
+  (if remote-object-id
+      (nih--pp-object remote-object-id whole nil "{ " " }")
+    (nih--insert "Object")))
 
 (cl-defmethod nih--pp-result (_remote-object-id
                               (_type (eql :number))
@@ -739,10 +743,30 @@ WHOLE is the whole RemoteObject plist.")
       (nih--insert "<function>"))))
 
 (cl-defmethod nih--pp-result (_remote-object-id
+                              (_type (eql :boolean))
+                              _subtype
+                              whole)
+  (nih--insert
+   (propertize (format "%s" (plist-get whole :value))
+               'font-lock-face 'font-lock-type-face)))
+
+(cl-defmethod nih--pp-result (_remote-object-id
+                              (_type (eql :nil))
+                              _subtype
+                              _whole)
+  (nih--insert "null"))
+
+(cl-defmethod nih--pp-result (_remote-object-id
                               (_type (eql :undefined))
                               _subtype
                               _whole)
   (nih--insert "undefined"))
+
+(cl-defmethod nih--pp-result (_remote-object-id
+                              (_type (eql :symbol))
+                              _subtype
+                              _whole)
+  (nih--insert "symbol"))
 
 
 
