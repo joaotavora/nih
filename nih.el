@@ -511,8 +511,11 @@ select from the minibuffer."
     (push new-connection nih--connections)
     (unless nih--default-connection (setq nih--default-connection
                                           new-connection))
-    (jsonrpc-request new-connection :Runtime.enable nil)
-    (run-hook-with-args 'nih-connected-hook new-connection)))
+    (unwind-protect
+        (progn
+          (jsonrpc-request new-connection :Runtime.enable nil)
+          (jsonrpc-request new-connection :Log.enable nil))
+      (run-hook-with-args 'nih-connected-hook new-connection))))
 
 (defun nih-start-target-on-host (_host _port)
   "Connect to a new CDP target on existing HOST and PORT.
