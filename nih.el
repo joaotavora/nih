@@ -232,7 +232,7 @@ Each function is called with a single
 
 (defun nih--connection-list-recalculate ()
   (setq-local tabulated-list-format `[("Default" 8) ("Name" 24 t)
-                                      ("PID" 6 t)
+                                      ("PID" 7 t)
                                       ("Host" 10 t) ("Port" 6 t)
                                       ("Command" 8 t)])
   (setq-local tabulated-list-entries
@@ -244,10 +244,12 @@ Each function is called with a single
                           action
                           ,#'(lambda (_button)
                                (pop-to-buffer (nih--repl conn))))
-                         ,(format "%s" (nih--pid conn))
+                         ,(format "%s" (or (nih--pid conn) "unknown"))
                          ,(format "%s" (nih--host conn))
                          ,(format "%s" (nih--port conn))
-                         ,(mapconcat #'identity (nih--command conn) " ")]))
+                         ,(if-let (cmd (nih--command conn))
+                              (mapconcat #'identity cmd " ")
+                            "(direct connection)")]))
                (reverse nih--connections))))
 
 (defun nih-list-connections ()
@@ -453,7 +455,7 @@ one, use that, otherwise present a choice.  After selecting a
 host, select a TARGET.  If there's more than one prompt user to
 select from the minibuffer."
   (interactive
-   (cl-destructuring-bind (host port proc)
+   (cl-destructuring-bind (host port &optional proc)
        (nih--read-host-and-port current-prefix-arg)
      (let ((chosen (nih--read-target host port)))
        (list (plist-get chosen :webSocketDebuggerUrl)
