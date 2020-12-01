@@ -478,10 +478,8 @@ select from the minibuffer."
                 interactive
                 (y-or-n-p (format "[nih] switch to existing %s instead?"
                                   (jsonrpc-name existing))))
-           (pop-to-buffer (nih--repl existing)))
+           (pop-to-buffer (nih--ensure-repl-buffer existing)))
           (t
-           (when existing
-             (jsonrpc-shutdown existing))
            (catch 'done
              (setq websocket
                    (websocket-open
@@ -865,8 +863,8 @@ for some reason."
   (nih--repl-insert-note (format "Tearing down becasue %s" reason))
   (nih--repl-save-this-buffers-history))
 
-(defun nih--repl-buffer (conn)
-  "Get or create NIH REPL for CONN."
+(defun nih--ensure-repl-buffer (conn)
+  "Get or create suitable REPL buffer for CONN."
   (let* (probe
          preferred-name
          (buffer
@@ -887,10 +885,10 @@ for some reason."
                         (jsonrpc-running-p nih--default-connection))))
             probe)
            ;; Buffer exists, but someone else is using it. We need to
-           ;; find a buffer with a new name.  Instead of
-           ;; `generate-new-buffer', a more readable name (hopefully)
+           ;; find a buffer with a new name.  Use a more specific name
+           ;; to try to avoid clashes.
            (probe
-            (get-buffer-create
+            (generate-new-buffer
              (format "*NIH REPL: %s*" (nih--target-uniqueish-nickname
                                        (nih--target-info conn)))))
            ;; Buffer doesn't exist, we can make it safely
@@ -1042,7 +1040,7 @@ for some reason."
   "Create and setup a new REPL buffer for CONN.
 CONN defaults to the current NIH connection."
   (interactive (list (nih--current-connection)))
-  (let* ((buffer (nih--repl-buffer conn)))
+  (let* ((buffer (nih--ensure-repl-buffer conn)))
     (with-current-buffer (pop-to-buffer buffer)
       ;; Take this oportunity to save any other REPL histories so that
       ;; the new REPL will see them.
