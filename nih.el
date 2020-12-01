@@ -716,6 +716,12 @@ WHOLE is the whole RemoteObject plist.")
     (nih--insert "Object")))
 
 (cl-defmethod nih--pp-result (_remote-object-id
+                              (_type (eql :object))
+                              (_subtype (eql :null))
+                              _whole)
+  (nih--insert (propertize "null" 'font-lock-face 'font-lock-constant-face)))
+
+(cl-defmethod nih--pp-result (_remote-object-id
                               (_type (eql :number))
                               _subtype
                               whole)
@@ -750,20 +756,23 @@ WHOLE is the whole RemoteObject plist.")
                               _subtype
                               whole)
   (nih--insert
-   (propertize (format "%s" (plist-get whole :value))
-               'font-lock-face 'font-lock-type-face)))
+   (propertize (if (eq (plist-get whole :value)
+                                    :json-false)
+                                "false"
+                              "true")
+               'font-lock-face 'font-lock-constant-face)))
 
 (cl-defmethod nih--pp-result (_remote-object-id
                               (_type (eql :nil))
                               _subtype
                               _whole)
-  (nih--insert "null"))
+  (nih--insert (propertize "nil?" 'font-lock-face 'font-lock-constant-face)))
 
 (cl-defmethod nih--pp-result (_remote-object-id
                               (_type (eql :undefined))
                               _subtype
                               _whole)
-  (nih--insert "undefined"))
+  (nih--insert (propertize "undefined" 'font-lock-face 'font-lock-constant-face)))
 
 (cl-defmethod nih--pp-result (_remote-object-id
                               (_type (eql :symbol))
