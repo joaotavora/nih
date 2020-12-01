@@ -28,7 +28,51 @@
 (require 'cl-lib)
 
 
+;;;; Utils
+;;;;
+(cl-defmacro nih--dbind (((_interface) &rest syms) object &body body)
+  "Destructure OBJECT, binding VARS in BODY.
+INTERFACE is a type described in chromedevtools.github.io.
+SYMS are keys of that type."
+  ;; TODO: make this smarter by plugging int the protocol spec somehow
+  (declare (indent 2) (debug (sexp sexp &rest form)))
+  `(cl-destructuring-bind
+       (&key ,@syms &allow-other-keys) ,object
+     ,@body))
+
+(defun nih--ensure-keyword (thing)
+  (cond ((keywordp thing) thing)
+        ((symbolp thing)
+         (intern (concat ":" (symbol-name thing))))
+        ((stringp thing)
+         (intern (concat ":" thing)))
+        (t
+         (error "Can't make %s a keyword" thing))))
+
+(defmacro nih--properly-supressing-message (&rest body)
+  "Geez...  Supress message() calls in BODY."
+  (let ((curr (cl-gensym)))
+    `(let ((,curr (current-message))
+           (message-log-max nil))
+       (let ((inhibit-message t)) ,@body)
+       (if ,curr (message ,curr)))))
+
+(cl-defmacro nih--when-live-buffer (buf &rest body)
+  "Check BUF live, then do BODY in it." (declare (indent 1) (debug t))
+  (let ((b (cl-gensym)))
+    `(let ((,b ,buf)) (if (buffer-live-p ,b) (with-current-buffer ,b ,@body)))))
+
+(defun nih--message (format &rest args)
+  "Message out with FORMAT with ARGS."
+  (message "[nih] %s" (apply #'format format args)))
+
+(defun nih--error (format &rest args)
+  "Error out with FORMAT with ARGS."
+  (error "[nih] %s" (apply #'format format args)))
+
+
 ;;;; Basic connection management
+;;;;
 (defclass nih--connection (jsonrpc-connection)
   ((repl
     :accessor nih--repl
@@ -121,14 +165,6 @@ which can be cycled with `nih-cycle-connections'.")
   (when interactive
     (nih--message "Active connection is now %s" nih--default-connection)))
 
-(defun nih--message (format &rest args)
-  "Message out with FORMAT with ARGS."
-  (message "[nih] %s" (apply #'format format args)))
-
-(defun nih--error (format &rest args)
-  "Error out with FORMAT with ARGS."
-  (error "[nih] %s" (apply #'format format args)))
-
 (defconst nih--{} (make-hash-table) "The empty JSON object.")
 
 (defvar nih-connected-hook 'nih-repl-new
@@ -138,11 +174,6 @@ Each function is called with a single
 
 (defvar nih-preserve-buffers nil
   "If nil, kill all buffers when a connection is removed.")
-
-(cl-defmacro nih--when-live-buffer (buf &rest body)
-  "Check BUF live, then do BODY in it." (declare (indent 1) (debug t))
-  (let ((b (cl-gensym)))
-    `(let ((,b ,buf)) (if (buffer-live-p ,b) (with-current-buffer ,b ,@body)))))
 
 (defun nih--on-websocket-close (ws)
   "Teardown NIH WS."
@@ -209,8 +240,8 @@ Each function is called with a single
     res))
 
 
-;;; M-x nih-list-connections
-;;;
+;;;; M-x nih-list-connections
+;;;;
 (defvar nih--connection-list-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "d") 'nih-connection-list-make-default)
@@ -266,7 +297,8 @@ Each function is called with a single
       (pop-to-buffer (current-buffer)))))
 
 
-;;; M-x nih & friends
+;;;; Helpers for M-x nih
+;;;;
 (defvar nih-host-programs nil)
 (setq
  nih-host-programs
@@ -418,7 +450,8 @@ is t."
       (list proc host port))))
 
 
-;;;
+;;;; M-x nih
+;;;;
 (defun nih (action)
   "Start saying NIH to someone.
 ACTION is a symbol naming another interactive function."
@@ -554,34 +587,7 @@ elements of `nih-host-programs'."
        interactive))))
 
 
-;;;; Utils
-(cl-defmacro nih--dbind (((_interface) &rest syms) object &body body)
-  "Destructure OBJECT, binding VARS in BODY.
-INTERFACE is a type described in chromedevtools.github.io.
-SYMS are keys of that type."
-  (declare (indent 2) (debug (sexp sexp &rest form)))
-  `(cl-destructuring-bind
-       (&key ,@syms &allow-other-keys) ,object
-     ,@body))
-
-(defun nih--ensure-keyword (thing)
-  (cond ((keywordp thing) thing)
-        ((symbolp thing)
-         (intern (concat ":" (symbol-name thing))))
-        ((stringp thing)
-         (intern (concat ":" thing)))
-        (t
-         (error "Can't make %s a keyword" thing))))
-
-(defmacro nih--properly-supressing-message (&rest body)
-  "Geez...  Supress message() calls in BODY."
-  (let ((curr (cl-gensym)))
-    `(let ((,curr (current-message))
-           (message-log-max nil))
-       (let ((inhibit-message t)) ,@body)
-       (if ,curr (message ,curr)))))
-
-
+;;;; CDP Events (aka JSONRPC notifications)
 ;;;;
 (cl-defmethod nih-handle-notification
   (_server method &rest args &key &allow-other-keys)
@@ -627,13 +633,24 @@ SYMS are keys of that type."
                    :stackTrace stackTrace)))
 
 
-;;; Object formatting
+;;;; Object formatting
+;;;;
 (defun nih--pp-get-remote (remote-object-id)
   (plist-get (jsonrpc-request (nih--current-connection)
                               :Runtime.getProperties
                               (list :objectId remote-object-id
                                     :ownProperties t))
              :result))
+
+(defmacro nih--repl-commiting-text (props &rest body)
+  (declare (debug (sexp &rest form)) (indent 1))
+  (let ((start-sym (cl-gensym)))
+    `(let ((,start-sym (marker-position (nih--repl-safe-mark)))
+           (inhibit-read-only t))
+       ,@body
+       (add-text-properties ,start-sym (nih--repl-safe-mark)
+                            (append '(read-only t front-sticky (read-only))
+                                    ,props)))))
 
 (defun nih--insert (&rest strings)
   (if-let (proc (nih--repl-process))
@@ -804,19 +821,10 @@ WHOLE is the whole RemoteObject plist.")
 
 
 
-;;;; repl
-
+;;;; REPL
+;;;;
 (require 'js)
 (require 'comint)
-
-(defun nih-repl (conn)
-  (interactive (list (nih--current-connection)))
-  (cl-assert conn "No current connection")
-  (cl-assert (called-interactively-p 'interactive) "For interactive use only")
-  (let ((repl (nih--repl conn)))
-    (if (and repl (buffer-live-p repl)) (pop-to-buffer repl)
-      (nih-repl-new conn))))
-;; (global-set-key (kbd "C-c C-z") 'nih-repl)
 
 (defvar nih--repl-output-mark nil)
 
@@ -1033,16 +1041,6 @@ for some reason."
   "Like `nih--repl-mark', but safe if there's no process."
   (if (nih--repl-process) (nih--repl-mark) (copy-marker (point-max))))
 
-(defmacro nih--repl-commiting-text (props &rest body)
-  (declare (debug (sexp &rest form)) (indent 1))
-  (let ((start-sym (cl-gensym)))
-    `(let ((,start-sym (marker-position (nih--repl-safe-mark)))
-           (inhibit-read-only t))
-       ,@body
-       (add-text-properties ,start-sym (nih--repl-safe-mark)
-                            (append '(read-only t front-sticky (read-only))
-                                    ,props)))))
-
 (defun nih-repl-return ()
   "Send the current JS statement for evaluation."
   (interactive)
@@ -1137,6 +1135,16 @@ CONN defaults to the current NIH connection."
         (nih--repl-insert-note (format "Welcome to %s!"
                                        (jsonrpc-name conn)))
         (nih--repl-insert-prompt proc)))))
+
+(defun nih-repl (conn)
+  "Switch to current REPL for CONN."
+  (interactive (list (nih--current-connection)))
+  (cl-assert conn "No current connection")
+  (cl-assert (called-interactively-p 'interactive) "For interactive use only")
+  (let ((repl (nih--repl conn)))
+    (if (and repl (buffer-live-p repl)) (pop-to-buffer repl)
+      (nih-repl-new conn))))
+;; (global-set-key (kbd "C-c C-z") 'nih-repl)
 
 (provide 'nih)
 ;;; nih.el ends here
