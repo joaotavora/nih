@@ -637,8 +637,9 @@ SYMS are keys of that type."
 
 (defun nih--insert (&rest strings)
   (if-let (proc (nih--repl-process))
-      (dolist (string strings)
-        (comint-output-filter (nih--repl-process) string))
+      (nih--repl-commiting-text ()
+        (dolist (string strings)
+          (comint-output-filter (nih--repl-process) string)))
     (apply #'insert strings)))
 
 (defun nih--pp-object (remote-object-id
@@ -932,9 +933,10 @@ for some reason."
 
 (defun nih--repl-insert-prompt (proc)
   "Insert the prompt into the NIH REPL."
-  (unless (bolp) (comint-output-filter proc "\n"))
-  (set-marker nih--repl-output-mark (point))
-  (comint-output-filter proc "JS> "))
+  (nih--repl-commiting-text ()
+    (unless (bolp) (comint-output-filter proc "\n"))
+    (set-marker nih--repl-output-mark (point))
+    (comint-output-filter proc "JS> ")))
 
 (defvar nih--in-repl-debug nil) ;; (setq nih--in-repl-debug t)
 
@@ -1044,7 +1046,8 @@ for some reason."
 (defun nih-repl-return ()
   "Send the current JS statement for evaluation."
   (interactive)
-  (comint-send-input))
+  (nih--repl-commiting-text
+      (comint-send-input)))
 
 (defface nih--repl-note-face
   `((t (:inherit font-lock-keyword-face)))
@@ -1052,19 +1055,23 @@ for some reason."
   :group 'nih)
 
 (defun nih--repl-insert-output (things)
-  (save-excursion
-    (goto-char nih--repl-output-mark)
-    (let ((start (point))
-          (inhibit-read-only t))
-      (unwind-protect
-          (cl-loop for (thing . rest) on things
-                   do (insert-before-markers
-                       (if (stringp thing) thing
-                         (format "%S" thing)))
-                   when rest do (insert-before-markers " ")
-                   finally (insert-before-markers "\n"))
-        (add-text-properties start (point)
-                             '(read-only t front-sticky (read-only)))))))
+  (let ((things (cl-etypecase things
+                  (string (list things))
+                  (cons things)
+                  (arrayp (append things nil)))))
+    (save-excursion
+      (goto-char nih--repl-output-mark)
+      (let ((start (point))
+            (inhibit-read-only t))
+        (unwind-protect
+            (cl-loop for (thing . rest) on things
+                     do (insert-before-markers
+                         (if (stringp thing) thing
+                           (format "%S" thing)))
+                     when rest do (insert-before-markers " ")
+                     finally (insert-before-markers "\n"))
+          (add-text-properties start (point)
+                               '(read-only t front-sticky (read-only))))))))
 
 (cl-defun nih--repl-log (conn &key
                               _source
