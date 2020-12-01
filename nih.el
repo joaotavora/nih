@@ -514,7 +514,10 @@ select from the minibuffer."
     (unwind-protect
         (progn
           (jsonrpc-request new-connection :Runtime.enable nil)
-          (jsonrpc-request new-connection :Log.enable nil))
+          (condition-case _err
+              (jsonrpc-request new-connection :Console.enable nil)
+            (error
+             (jsonrpc-request new-connection :Log.enable nil))))
       (run-hook-with-args 'nih-connected-hook new-connection))))
 
 (defun nih-start-target-on-host (_host _port)
@@ -588,22 +591,40 @@ SYMS are keys of that type."
                 args))
 
 (cl-defmethod nih-handle-notification
-  (conn (_method (eql Runtime.consoleAPICalled)) &rest all &key type args
+  (conn (_method (eql Runtime.consoleAPICalled))
+        &key type stackTrace timestamp args
         &allow-other-keys)
-  (apply #'nih--console-api-call conn (nih--ensure-keyword type) args all))
+  (let ((level (alist-get type
+                          '(("warning"   . "warning")
+                            ("info"      . "info")
+                            ("log"       . "info")
+                            ("error"     . "error")
+                            ("exception" . "error")
+                            ("debug"     . "verbose"))
+                          nil nil #'equal)))
+    (when level
+      (nih--repl-log conn
+                     :source "javascript"
+                     :level level
+                     :args args
+                     :timestamp timestamp
+                     :stackTrace stackTrace))))
 
-
-;;;; Console API loggers
-
-(cl-defgeneric nih--console-api-call (conn method args &key &allow-other-keys))
-
-(cl-defmethod nih--console-api-call (conn (_method (eql :log)) args
-                                          &rest whole-call &key &allow-other-keys )
-  (with-current-buffer (nih-repl conn)
-    (nih--message "Would be inserting %s in %s remembering %s"
-                  (plist-get (aref args 0) :value)
-                  (current-buffer)
-                  whole-call)))
+(cl-defmethod nih-handle-notification
+  (conn (_method (eql Log.entryAdded)) &rest all &key entry
+        &allow-other-keys)
+  (nih--dbind ((LogEntry)
+               source level text url lineNumber timestamp args
+               stackTrace)
+      entry
+    (nih--repl-log conn
+                   :source source
+                   :level level
+                   :args (or args text)
+                   :url url
+                   :line lineNumber
+                   :timestamp timestamp
+                   :stackTrace stackTrace)))
 
 
 ;;; Object formatting
@@ -790,6 +811,7 @@ WHOLE is the whole RemoteObject plist.")
 (defun nih-repl (conn)
   (interactive (list (nih--current-connection)))
   (cl-assert conn "No current connection")
+  (cl-assert (called-interactively-p 'interactive) "For interactive use only")
   (let ((repl (nih--repl conn)))
     (if (and repl (buffer-live-p repl)) (pop-to-buffer repl)
       (nih-repl-new conn))))
@@ -873,7 +895,7 @@ for some reason."
   (nih--repl-save-this-buffers-history))
 
 (defun nih--ensure-repl-buffer (conn)
-  "Get or create suitable REPL buffer for CONN."
+  "Set CONNs REPL to a suitably named buffer."
   (let* (probe
          preferred-name
          (buffer
@@ -911,6 +933,7 @@ for some reason."
 (defun nih--repl-insert-prompt (proc)
   "Insert the prompt into the NIH REPL."
   (unless (bolp) (comint-output-filter proc "\n"))
+  (set-marker nih--repl-output-mark (point))
   (comint-output-filter proc "JS> "))
 
 (defvar nih--in-repl-debug nil) ;; (setq nih--in-repl-debug t)
@@ -1027,6 +1050,44 @@ for some reason."
   `((t (:inherit font-lock-keyword-face)))
   "Face for the REPL notes."
   :group 'nih)
+
+(defun nih--repl-insert-output (things)
+  (save-excursion
+    (goto-char nih--repl-output-mark)
+    (let ((start (point))
+          (inhibit-read-only t))
+      (unwind-protect
+          (cl-loop for (thing . rest) on things
+                   do (insert-before-markers
+                       (if (stringp thing) thing
+                         (format "%S" thing)))
+                   when rest do (insert-before-markers " ")
+                   finally (insert-before-markers "\n"))
+        (add-text-properties start (point)
+                             '(read-only t front-sticky (read-only)))))))
+
+(cl-defun nih--repl-log (conn &key
+                              _source
+                              level
+                              args
+                              _url
+                              _line
+                              _timestamp
+                              _stackTrace)
+  (nih--when-live-buffer (nih--repl conn)
+    (let ((face  (alist-get level '(("warning" . 'warning)
+                                    ("error"   . 'error)
+                                    ("info"    . nil)
+                                    ("verbose" . nil))
+                            nil nil #'equal)))
+      (cond ((stringp args)
+             (setq args (list args)))
+            ((arrayp args)
+             (setq args (append args nil))))
+      (when face
+        (setq args (cons (propertize (format "%s:" level) 'font-lock-face face)
+                         args)))
+      (nih--repl-insert-output args))))
 
 (defun nih--repl-insert-note (string &optional face)
   "Insert a note into the REPL."
