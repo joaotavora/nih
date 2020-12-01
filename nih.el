@@ -246,6 +246,7 @@ Each function is called with a single
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "d") 'nih-connection-list-make-default)
     (define-key map (kbd "k") 'nih-connection-list-kill)
+    (define-key map (kbd "RET") 'nih-connection-list-repl)
     map))
 
 (defun nih-connection-list-make-default (conn)
@@ -257,6 +258,10 @@ Each function is called with a single
   (interactive (list (tabulated-list-get-id)))
   (jsonrpc-shutdown conn)
   (revert-buffer))
+
+(defun nih-connection-list-repl (conn)
+  (interactive (list (tabulated-list-get-id)))
+  (nih-repl conn))
 
 (define-derived-mode nih--connection-list-mode tabulated-list-mode
   "nih" "A mode for listing NIH connections.")
@@ -1140,7 +1145,6 @@ CONN defaults to the current NIH connection."
   "Switch to current REPL for CONN."
   (interactive (list (nih--current-connection)))
   (cl-assert conn "No current connection")
-  (cl-assert (called-interactively-p 'interactive) "For interactive use only")
   (let ((repl (nih--repl conn)))
     (if (and repl (buffer-live-p repl)) (pop-to-buffer repl)
       (nih-repl-new conn))))
