@@ -552,10 +552,8 @@ select from the minibuffer."
     (unwind-protect
         (progn
           (jsonrpc-request new-connection :Runtime.enable nil)
-          (condition-case _err
-              (jsonrpc-request new-connection :Console.enable nil)
-            (error
-             (jsonrpc-request new-connection :Log.enable nil))))
+          (jsonrpc-request new-connection :Console.disable nil)
+          (jsonrpc-request new-connection :Log.enable nil))
       (run-hook-with-args 'nih-connected-hook new-connection))))
 
 (defun nih-start-target-on-host (_host _port)
@@ -620,6 +618,20 @@ elements of `nih-host-programs'."
                      :args args
                      :timestamp timestamp
                      :stackTrace stackTrace))))
+
+(cl-defmethod nih-handle-notification
+  (conn (_method (eql Console.messageAdded))
+        &key message
+        &allow-other-keys)
+  (nih--dbind ((Console.ConsoleMessage) source level text url line column)
+      message
+    (nih--repl-log conn
+                   :source source
+                   :level level
+                   :args text
+                   :url url
+                   :line line
+                   :column column)))
 
 (cl-defmethod nih-handle-notification
   (conn (_method (eql Log.entryAdded)) &rest all &key entry
@@ -1082,6 +1094,7 @@ for some reason."
                               args
                               _url
                               _line
+                              _column
                               _timestamp
                               _stackTrace)
   (nih--when-live-buffer (nih--repl conn)
