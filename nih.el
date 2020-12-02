@@ -692,6 +692,7 @@ elements of `nih-host-programs'."
                                     ,props)))))
 
 (defvar nih--pp-synchronously t "Non-nil `nih--insert' inserts with proc mark.")
+(defvar nih--pp-level 1 "Levels of nested objects pretty-printed automatically.")
 (defvar nih--pp-indent t)
 (defvar nih--pp-prin1 t "Non-nil, `prin1' is used for strings.")
 
@@ -731,10 +732,11 @@ elements of `nih-host-programs'."
                                            (length name))
                                         ? )
                            " : "))
-            (nih--pp-object objectId
-                            (nih--ensure-keyword type)
-                            (nih--ensure-keyword subtype)
-                            remote-object)
+            (let ((nih--pp-level (1- nih--pp-level)))
+              (nih--pp-object objectId
+                              (nih--ensure-keyword type)
+                              (nih--ensure-keyword subtype)
+                              remote-object))
             (when (cl-plusp n-to-print) (nih--insert ",\n")))))
    finally
    (when (cl-plusp n-to-print) (nih--insert "..."))
@@ -772,7 +774,8 @@ elements of `nih-host-programs'."
                               after)
   (let (preview)
     (cond
-     (nih--pp-synchronously
+     ((and nih--pp-synchronously
+           (cl-plusp nih--pp-level))
       (nih--pp-full-structured-obj remote-object-id whole arrayp before after))
      ((setq preview (plist-get whole :preview))
       (nih--pp-abbreviated-preview preview arrayp before after))
