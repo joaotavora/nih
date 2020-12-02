@@ -649,6 +649,24 @@ elements of `nih-host-programs'."
                    :timestamp timestamp
                    :stackTrace stackTrace)))
 
+(cl-defmethod nih-handle-notification
+  (conn (_method (eql Runtime.executionContextCreated)) &rest all)
+  (nih--when-live-buffer (nih--repl conn)
+    (nih--repl-insert-note (format "ExecutionContext Created: %S" all)
+                           nil t)))
+
+(cl-defmethod nih-handle-notification
+  (conn (_method (eql Runtime.executionContextDestroyed)) &rest all)
+  (nih--when-live-buffer (nih--repl conn)
+    (nih--repl-insert-note (format "ExecutionContext Destroyed: %S" all)
+                           nil t)))
+
+(cl-defmethod nih-handle-notification
+  (conn (_method (eql Runtime.executionContextsCleared)) &rest all)
+  (nih--when-live-buffer (nih--repl conn)
+    (nih--repl-insert-note (format "All ExecutionContexts cleared %S" all)
+                           nil t)))
+
 
 ;;;; Object formatting
 ;;;;
@@ -1112,22 +1130,26 @@ for some reason."
                          args)))
       (nih--repl-insert-output args))))
 
-(defun nih--repl-insert-note (string &optional face)
-  "Insert a note into the REPL."
+(defun nih--repl-insert-note (string &optional face async)
+  "Insert a note into the REPL.
+If ASYNC, the note is asynchronous, i.e. not it doesn't affect
+the process mark."
   (let* ((face (or face 'nih--repl-note-face))
          (string (if (stringp string) string (pp-to-string string)))
          (string (replace-regexp-in-string "^" "// " (string-trim string))))
-    (nih--repl-commiting-text (when face
-                                `(face ,face font-lock-face ,face))
-      (cond ((nih--repl-process)
-             ;; notes are inserted "synchronously" with the process mark  process
+    (cond (async (nih--repl-insert-output
+                  (propertize string 'font-lock-face face)))
+          ((nih--repl-process)
+           (nih--repl-commiting-text (when face
+                                       `(face ,face font-lock-face ,face))
+             ;; insert synchronously
              (comint-output-filter (nih--repl-process)
-                                   (format "%s\n" string)))
-            (t
-             ;; If no process yet, fall back to the simpler strategy.
-             (goto-char (point-max))
-             (unless (bolp) (newline))
-             (insert string "\n"))))))
+                                   (format "%s\n" string))))
+          (t
+           ;; If no process yet, fall back to the simpler strategy.
+           (goto-char (point-max))
+           (unless (bolp) (newline))
+           (insert string "\n")))))
 
 (defun nih-repl-new (conn)
   "Create and setup a new REPL buffer for CONN.
