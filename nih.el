@@ -1195,31 +1195,35 @@ for some reason."
   :group 'nih)
 
 (defun nih--repl-insert-output (things &optional ensure-newline)
-  (let ((things (cl-etypecase things
-                  (string (list things))
-                  (cons things)
-                  (arrayp (append things nil)))))
-    (save-excursion
-      (goto-char nih--repl-output-mark)
-      (let ((start (point))
-            (inhibit-read-only t))
-        (unwind-protect
-            (cl-loop with nih--pp-synchronously = nil
-                     with nih--pp-prin1 = nil
-                     initially (when (and ensure-newline
-                                          (not (bolp)))
-                                 (nih--insert "\n"))
-                     for (thing . rest) on things
-                     if (stringp thing) do (nih--insert thing)
-                     else do (nih--insert-remote-object thing)
-                     when rest do (nih--insert " "))
-          (add-text-properties start (point)
-                               '(read-only t front-sticky (read-only)))
-          (set-marker nih--repl-output-mark (point))
-          (let ((mark (nih--repl-mark)))
-            (when (and mark
-                       (< mark nih--repl-output-mark))
-              (set-marker mark nih--repl-output-mark))))))))
+  (save-excursion
+    (let ((things (cl-etypecase things
+                    (string (list things))
+                    (cons things)
+                    (arrayp (append things nil))))
+          (inhibit-read-only t)
+          (start (progn (goto-char nih--repl-output-mark)
+                        (point)))
+          (nih--pp-synchronously nil)
+          (nih--pp-prin1 nil))
+      (cond ((and ensure-newline
+                  (not (bolp)))
+             ;; We're not at bolp and we should be.  Insert newline behind.
+             (nih--insert "\n"))
+            ((eq (get-text-property (point) 'field) 'output)
+             ;; We're up against synchronously inserted output, insert a
+             ;; newline after us.
+             (save-excursion (insert "\n"))))
+      (cl-loop for (thing . rest) on things
+               if (stringp thing) do (nih--insert thing)
+               else do (nih--insert-remote-object thing)
+               when rest do (nih--insert " "))
+      (add-text-properties start (point)
+                           '(read-only t front-sticky (read-only)))
+      (set-marker nih--repl-output-mark (point))
+      (let ((mark (nih--repl-mark)))
+        (when (and mark
+                   (< mark nih--repl-output-mark))
+          (set-marker mark nih--repl-output-mark))))))
 
 (cl-defun nih--repl-log (conn &key
                               _source
@@ -1260,7 +1264,8 @@ the process mark."
                                        `(face ,face font-lock-face ,face))
              ;; insert synchronously
              (comint-output-filter (nih--repl-process)
-                                   (format "%s\n" string))))
+                                   (format "%s\n" string))
+             (set-marker nih--repl-output-mark (nih--repl-mark))))
           (t
            ;; If no process yet/anymore, fall back to the simpler strategy.
            (let ((inhibit-read-only t))
