@@ -1162,10 +1162,11 @@ the process mark."
              (comint-output-filter (nih--repl-process)
                                    (format "%s\n" string))))
           (t
-           ;; If no process yet, fall back to the simpler strategy.
-           (goto-char (point-max))
-           (unless (bolp) (newline))
-           (insert string "\n")))))
+           ;; If no process yet/anymore, fall back to the simpler strategy.
+           (let ((inhibit-read-only t))
+             (goto-char (point-max))
+             (unless (bolp) (newline))
+             (insert string "\n"))))))
 
 (defun nih-repl-new (conn)
   "Create and setup a new REPL buffer for CONN.
