@@ -743,11 +743,12 @@ elements of `nih-host-programs'."
 WHOLE is the whole RemoteObject plist.")
 
 (cl-defmethod nih--pp-object :around (remote-object-id
-                                      _type
+                                      type
                                       _subtype
                                       whole)
   (let ((original-buffer (current-buffer))
         (nih--dispatching-connection (nih--current-connection))
+        (nih--pp-indent (if (eq type :function) nil nih--pp-indent));hackofdeath!
         (beg (point)))
     (prog1
         (cond (nih--pp-indent
@@ -827,11 +828,14 @@ WHOLE is the whole RemoteObject plist.")
          (cl-find "name" (nih--pp-get-remote remote-object-id)
                   :key (lambda (d) (plist-get d :name))
                   :test #'string=)))
-    (if name-prop
-        (nih--insert (format "<function %s>"
-                             (plist-get (plist-get name-prop :value)
-                                        :value)))
-      (nih--insert "<function>"))))
+    (nih--insert
+     (propertize
+      (if name-prop
+          (format "<function %s>"
+                  (plist-get (plist-get name-prop :value)
+                             :value))
+        "<function>")
+      'font-lock-face 'font-lock-function-name-face))))
 
 (cl-defmethod nih--pp-object (_remote-object-id
                               (_type (eql :boolean))
