@@ -1172,7 +1172,7 @@ CONN defaults to the current NIH connection."
     (with-current-buffer (pop-to-buffer buffer)
       ;; Take this oportunity to save any other REPL histories so that
       ;; the new REPL will see them.
-      (nih--repl-save-histories)
+      (ignore-errors (nih--repl-save-histories))
       (goto-char (point-max))
       ;; Maybe print some introductory message?
       (nih--repl-mode)
