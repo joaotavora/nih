@@ -987,7 +987,9 @@ for some reason."
   "Insert the prompt into the NIH REPL."
   (nih--repl-commiting-text ()
     (unless (bolp) (comint-output-filter proc "\n"))
-    (comint-output-filter proc "JS> ")))
+    (comint-output-filter proc "JS> ")
+    (buffer-disable-undo)
+    (buffer-enable-undo)))
 
 (defvar nih--in-repl-debug nil) ;; (setq nih--in-repl-debug t)
 
@@ -1003,6 +1005,7 @@ for some reason."
   "Send STRING to PROC."
   (unless (bolp) (nih--insert "\n"))
   (set-marker nih--repl-output-mark (point))
+  (buffer-disable-undo)
   (unwind-protect
       (cl-destructuring-bind (&key result exceptionDetails)
           (jsonrpc-request (process-get proc 'nih--connection)
