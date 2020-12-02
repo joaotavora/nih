@@ -654,7 +654,9 @@ elements of `nih-host-programs'."
   (conn (_method (eql Runtime.executionContextCreated)) &rest all)
   (nih--when-live-buffer (nih--repl conn)
     (nih--repl-insert-note (format "ExecutionContext Created: %S" all)
-                           nil t)))
+                           nil t)
+    ;; FIXME: maybe do this in the execution context just created?
+    (nih--repl-init-object-store)))
 
 (cl-defmethod nih-handle-notification
   (conn (_method (eql Runtime.executionContextDestroyed)) &rest all)
@@ -1005,6 +1007,54 @@ for some reason."
                     (nih--ensure-keyword subtype)
                     result)))
 
+(defvar-local nih--repl-object-store-id nil)
+(defvar nih--repl-object-store-js)
+(setq nih--repl-object-store-js
+      "$nih = (function(obj) {
+                 var history = [];
+                 var recall = function(n) {
+                    // console.log('recalling', n);
+                    return history[n];
+                 };
+                 var store = function(obj) {
+                    // console.log('storing');
+                    history.push(obj);
+                 };
+                 return {recall, store};
+              }())")
+
+(defun nih--repl-init-object-store ()
+  (cl-destructuring-bind (&key result)
+      (jsonrpc-request (nih--current-connection)
+                       :Runtime.evaluate
+                       `(:expression
+                         ,nih--repl-object-store-js
+                         :replMode t
+                         :generatePreview t)
+                       :timeout 40)
+    (setq-local nih--repl-object-store-id
+                (and result
+                     (plist-get result :objectId)))
+    (unless nih--repl-object-store-id
+      (nih--repl-insert-note "Object store failed to initialize!"))))
+
+(defun nih--repl-store-remote-object (result)
+  (nih--dbind ((Result.RemoteObject)
+               value objectId unserializableValue)
+      result
+    (jsonrpc-request
+     (nih--current-connection)
+     :Runtime.callFunctionOn
+     (let ((arg (or `(,@(and objectId `(:objectId ,objectId))
+                      ,@(and value `(:value ,value))
+                      ,@(and unserializableValue `(:unserializableValue
+                                                   ,unserializableValue)))
+                    nih--{})))
+       (list :functionDeclaration "function(obj) {this.store(obj);}"
+             :objectId nih--repl-object-store-id
+             :arguments
+             `[,arg])))))
+
 (cl-defun nih--repl-input-sender (proc string &aux success)
   "Send STRING to PROC."
   (unless (bolp) (nih--insert "\n"))
@@ -1012,7 +1062,7 @@ for some reason."
   (buffer-disable-undo)
   (unwind-protect
       (cl-destructuring-bind (&key result exceptionDetails)
-          (jsonrpc-request (process-get proc 'nih--connection)
+          (jsonrpc-request (nih--current-connection)
                            :Runtime.evaluate
                            `(:expression
                              ,(substring-no-properties
@@ -1020,13 +1070,13 @@ for some reason."
                              :replMode t
                              :generatePreview t)
                            :timeout 40)
-        (goto-char (nih--repl-safe-mark))
-        (unless (bolp) (nih--insert "\n"))
         (cond (exceptionDetails
                (nih--dbind ((Result.RemoteObject) text exception)
                    exceptionDetails
                  (when nih--in-repl-debug
                    (nih--repl-insert-note exception))
+                 (goto-char (nih--repl-safe-mark))
+                 (unless (bolp) (nih--insert "\n"))
                  (comint-output-filter
                   proc
                   (propertize (format "%s %s\n" text (plist-get exception
@@ -1035,6 +1085,9 @@ for some reason."
               (result
                (when nih--in-repl-debug
                  (nih--repl-insert-note result))
+               (nih--repl-store-remote-object result)
+               (goto-char (nih--repl-safe-mark))
+               (unless (bolp) (nih--insert "\n"))
                (nih--insert-remote-object result))
               (t
                (nih--error "Unkonwn reply to Runtime.evaluate")))
@@ -1158,7 +1211,8 @@ the process mark."
          (string (if (stringp string) string (pp-to-string string)))
          (string (replace-regexp-in-string "^" "// " (string-trim string))))
     (cond (async (nih--repl-insert-output
-                  (propertize string 'font-lock-face face)))
+                  (propertize string 'font-lock-face face)
+                  t))
           ((nih--repl-process)
            (nih--repl-commiting-text (when face
                                        `(face ,face font-lock-face ,face))
@@ -1191,7 +1245,7 @@ CONN defaults to the current NIH connection."
         (set-process-sentinel proc #'ignore)
         (set-process-query-on-exit-flag proc nil)
         (process-put proc 'nih--connection conn)
-        ;; maybe do something that enables the remote REPL?
+        (nih--repl-init-object-store)
         (nih--repl-read-in-history)
         (nih--repl-insert-note (format "Welcome to %s!"
                                        (jsonrpc-name conn)))
