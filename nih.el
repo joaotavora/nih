@@ -702,11 +702,11 @@ elements of `nih-host-programs'."
           (comint-output-filter (nih--repl-process) string)))
     (apply #'insert strings)))
 
-(defun nih--pp-structured-obj (remote-object-id
-                              _whole
-                              arrayp
-                              before
-                              after)
+(defun nih--pp-full-structured-obj (remote-object-id
+                                    _whole
+                                    arrayp
+                                    before
+                                    after)
   (cl-loop
    with remote-object = (nih--pp-get-remote remote-object-id)
    with (n-to-print . maxlen)
@@ -728,8 +728,8 @@ elements of `nih-host-programs'."
               (nih--insert (propertize name 'font-lock-face
                                        'font-lock-function-name-face)
                            (make-string (- maxlen
-                                                (length name))
-                                             ? )
+                                           (length name))
+                                        ? )
                            " : "))
             (nih--pp-object objectId
                             (nih--ensure-keyword type)
@@ -739,6 +739,45 @@ elements of `nih-host-programs'."
    finally
    (when (cl-plusp n-to-print) (nih--insert "..."))
    (nih--insert after)))
+
+(defun nih--pp-abbreviated-preview (preview arrayp before after)
+  (cl-loop initially (nih--insert before)
+           with properties = (plist-get preview :properties)
+           with n-to-print = (length properties)
+           for desc across properties
+           do (nih--dbind ((Runtime.PropertyPreivew) name
+                           type subtype)
+                  desc
+                (cl-decf n-to-print)
+                (unless arrayp
+                  (nih--insert (propertize name 'font-lock-face
+                                           'font-lock-function-name-face)
+                               " : "))
+                (nih--pp-object nil
+                                (nih--ensure-keyword type)
+                                (and subtype
+                                     (nih--ensure-keyword subtype))
+                                desc)
+                (when (cl-plusp n-to-print) (nih--insert ",")))
+           finally
+           (unless (eq (plist-get preview :overflow)
+                       :json-false)
+             (nih--insert "..."))
+           (nih--insert after)))
+
+(defun nih--pp-structured-obj (remote-object-id
+                              whole
+                              arrayp
+                              before
+                              after)
+  (let (preview)
+    (cond
+     (nih--pp-synchronously
+      (nih--pp-full-structured-obj remote-object-id whole arrayp before after))
+     ((setq preview (plist-get whole :preview))
+      (nih--pp-abbreviated-preview preview arrayp before after))
+     (t
+      (if arrayp (nih--insert "Array") (nih--insert "Object"))))))
 
 (cl-defgeneric nih--pp-object (remote-object-id type subtype whole)
   "Print description REMOTE-OBJECT-ID of TYPE/SUBTYPE at point.
@@ -787,7 +826,7 @@ WHOLE is the whole RemoteObject plist.")
                               whole)
   (if remote-object-id
       (nih--pp-structured-obj remote-object-id whole t "[" "]")
-    (nih--insert "Array")))
+    (nih--insert (or (plist-get whole :value) "Array"))))
 
 (cl-defmethod nih--pp-object (remote-object-id
                               (_type (eql :object))
@@ -795,7 +834,7 @@ WHOLE is the whole RemoteObject plist.")
                               whole)
   (if remote-object-id
       (nih--pp-structured-obj remote-object-id whole nil "{ " " }")
-    (nih--insert "Object")))
+    (nih--insert (or (plist-get whole :value) "Object"))))
 
 (cl-defmethod nih--pp-object (_remote-object-id
                               (_type (eql :object))
