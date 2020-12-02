@@ -682,19 +682,24 @@ elements of `nih-host-programs'."
   (let ((start-sym (cl-gensym)))
     `(let ((,start-sym (marker-position (nih--repl-safe-mark)))
            (inhibit-read-only t))
+       (goto-char ,start-sym)
        ,@body
        (add-text-properties ,start-sym (nih--repl-safe-mark)
                             (append '(read-only t front-sticky (read-only))
                                     ,props)))))
 
+(defvar nih--pp-synchronously t "Non-nil `nih--insert' inserts with proc mark.")
+(defvar nih--pp-indent t)
+(defvar nih--pp-prin1 t "Non-nil, `prin1' is used for strings.")
+
 (defun nih--insert (&rest strings)
-  (if-let (proc (nih--repl-process))
+  (if-let (proc (and nih--pp-synchronously (nih--repl-process)))
       (nih--repl-commiting-text ()
         (dolist (string strings)
           (comint-output-filter (nih--repl-process) string)))
     (apply #'insert strings)))
 
-(defun nih--pp-object (remote-object-id
+(defun nih--pp-structured-obj (remote-object-id
                               _whole
                               arrayp
                               before
@@ -723,7 +728,7 @@ elements of `nih-host-programs'."
                                                 (length name))
                                              ? )
                            " : "))
-            (nih--pp-result objectId
+            (nih--pp-object objectId
                             (nih--ensure-keyword type)
                             (nih--ensure-keyword subtype)
                             remote-object)
@@ -732,17 +737,16 @@ elements of `nih-host-programs'."
    (when (cl-plusp n-to-print) (nih--insert "..."))
    (nih--insert after)))
 
-(cl-defgeneric nih--pp-result (remote-object-id type subtype whole)
+(cl-defgeneric nih--pp-object (remote-object-id type subtype whole)
   "Print description REMOTE-OBJECT-ID of TYPE/SUBTYPE at point.
 WHOLE is the whole RemoteObject plist.")
 
-(defvar nih--pp-indent t)
-
-(cl-defmethod nih--pp-result :around (remote-object-id
+(cl-defmethod nih--pp-object :around (remote-object-id
                                       _type
                                       _subtype
                                       whole)
   (let ((original-buffer (current-buffer))
+        (nih--dispatching-connection (nih--current-connection))
         (beg (point)))
     (prog1
         (cond (nih--pp-indent
@@ -773,29 +777,29 @@ WHOLE is the whole RemoteObject plist.")
                                  (plist-get whole :type))
                              remote-object-id))))))
 
-(cl-defmethod nih--pp-result (remote-object-id
+(cl-defmethod nih--pp-object (remote-object-id
                               (_type (eql :object))
                               (_subtype (eql :array))
                               whole)
   (if remote-object-id
-      (nih--pp-object remote-object-id whole t "[" "]")
+      (nih--pp-structured-obj remote-object-id whole t "[" "]")
     (nih--insert "Array")))
 
-(cl-defmethod nih--pp-result (remote-object-id
+(cl-defmethod nih--pp-object (remote-object-id
                               (_type (eql :object))
                               _subtype
                               whole)
   (if remote-object-id
-      (nih--pp-object remote-object-id whole nil "{ " " }")
+      (nih--pp-structured-obj remote-object-id whole nil "{ " " }")
     (nih--insert "Object")))
 
-(cl-defmethod nih--pp-result (_remote-object-id
+(cl-defmethod nih--pp-object (_remote-object-id
                               (_type (eql :object))
                               (_subtype (eql :null))
                               _whole)
   (nih--insert (propertize "null" 'font-lock-face 'font-lock-constant-face)))
 
-(cl-defmethod nih--pp-result (_remote-object-id
+(cl-defmethod nih--pp-object (_remote-object-id
                               (_type (eql :number))
                               _subtype
                               whole)
@@ -803,15 +807,18 @@ WHOLE is the whole RemoteObject plist.")
    (propertize (format "%s" (plist-get whole :value))
                'font-lock-face 'font-lock-type-face)))
 
-(cl-defmethod nih--pp-result (_remote-object-id
+(cl-defmethod nih--pp-object (_remote-object-id
                               (_type (eql :string))
                               _subtype
                               whole)
-  (nih--insert
-   (propertize (format "%S" (plist-get whole :value))
-               'font-lock-face 'font-lock-string-face)))
+  (let ((str (plist-get whole :value)))
+    (nih--insert
+     (if nih--pp-prin1
+         (propertize (prin1-to-string str)
+                     'font-lock-face 'font-lock-string-face)
+       str))))
 
-(cl-defmethod nih--pp-result (remote-object-id
+(cl-defmethod nih--pp-object (remote-object-id
                               (_type (eql :function))
                               _subtype
                               _whole)
@@ -825,7 +832,7 @@ WHOLE is the whole RemoteObject plist.")
                                         :value)))
       (nih--insert "<function>"))))
 
-(cl-defmethod nih--pp-result (_remote-object-id
+(cl-defmethod nih--pp-object (_remote-object-id
                               (_type (eql :boolean))
                               _subtype
                               whole)
@@ -836,19 +843,19 @@ WHOLE is the whole RemoteObject plist.")
                               "true")
                'font-lock-face 'font-lock-constant-face)))
 
-(cl-defmethod nih--pp-result (_remote-object-id
+(cl-defmethod nih--pp-object (_remote-object-id
                               (_type (eql :nil))
                               _subtype
                               _whole)
   (nih--insert (propertize "nil?" 'font-lock-face 'font-lock-constant-face)))
 
-(cl-defmethod nih--pp-result (_remote-object-id
+(cl-defmethod nih--pp-object (_remote-object-id
                               (_type (eql :undefined))
                               _subtype
                               _whole)
   (nih--insert (propertize "undefined" 'font-lock-face 'font-lock-constant-face)))
 
-(cl-defmethod nih--pp-result (_remote-object-id
+(cl-defmethod nih--pp-object (_remote-object-id
                               (_type (eql :symbol))
                               _subtype
                               _whole)
@@ -875,6 +882,7 @@ WHOLE is the whole RemoteObject plist.")
                 (comint-input-ignoredups           . t)
                 (comint-prompt-read-only           . t)
                 (comint-process-echoes             . nil)
+                ;; (comint-input-sender-no-newline    . t)
                 (indent-line-function              . lisp-indent-line)
                 (nih--repl-read-mark               . nil)
                 (nih--repl-pending-output          . nil)
@@ -978,29 +986,22 @@ for some reason."
   "Insert the prompt into the NIH REPL."
   (nih--repl-commiting-text ()
     (unless (bolp) (comint-output-filter proc "\n"))
-    (set-marker nih--repl-output-mark (point))
     (comint-output-filter proc "JS> ")))
 
 (defvar nih--in-repl-debug nil) ;; (setq nih--in-repl-debug t)
 
-(defun nih--repl-insert-result (result)
+(defun nih--insert-remote-object (result)
   (nih--dbind ((Result.RemoteObject) type subtype objectId)
       result
-    (when (and nih--in-repl-debug objectId)
-      (nih--repl-insert-note (and objectId
-                                  (jsonrpc-request (nih--current-connection)
-                                                   :Runtime.getProperties
-                                                   (list :objectId objectId
-                                                         :ownProperties t
-                                                         :generatePreview t)))))
-    (let ((nih--dispatching-connection nih--default-connection))
-      (nih--pp-result objectId
-                      (nih--ensure-keyword type)
-                      (nih--ensure-keyword subtype)
-                      result))))
+    (nih--pp-object objectId
+                    (nih--ensure-keyword type)
+                    (nih--ensure-keyword subtype)
+                    result)))
 
 (cl-defun nih--repl-input-sender (proc string &aux success)
   "Send STRING to PROC."
+  (unless (bolp) (nih--insert "\n"))
+  (set-marker nih--repl-output-mark (point))
   (unwind-protect
       (cl-destructuring-bind (&key result exceptionDetails)
           (jsonrpc-request (process-get proc 'nih--connection)
@@ -1009,7 +1010,10 @@ for some reason."
                              ,(substring-no-properties
                                (string-trim string))
                              :replMode t
-                             :generatePreview t))
+                             :generatePreview t)
+                           :timeout 40)
+        (goto-char (nih--repl-safe-mark))
+        (unless (bolp) (nih--insert "\n"))
         (cond (exceptionDetails
                (nih--dbind ((Result.RemoteObject) text exception)
                    exceptionDetails
@@ -1023,7 +1027,7 @@ for some reason."
               (result
                (when nih--in-repl-debug
                  (nih--repl-insert-note result))
-               (nih--repl-insert-result result))
+               (nih--insert-remote-object result))
               (t
                (nih--error "Unkonwn reply to Runtime.evaluate")))
         (setq success t))
@@ -1079,15 +1083,15 @@ for some reason."
 (defun nih-repl-return ()
   "Send the current JS statement for evaluation."
   (interactive)
-  (nih--repl-commiting-text
-      (comint-send-input)))
+  (nih--repl-commiting-text ()
+    (comint-send-input t)))
 
 (defface nih--repl-note-face
   `((t (:inherit font-lock-keyword-face)))
   "Face for the REPL notes."
   :group 'nih)
 
-(defun nih--repl-insert-output (things)
+(defun nih--repl-insert-output (things &optional ensure-newline)
   (let ((things (cl-etypecase things
                   (string (list things))
                   (cons things)
@@ -1097,14 +1101,22 @@ for some reason."
       (let ((start (point))
             (inhibit-read-only t))
         (unwind-protect
-            (cl-loop for (thing . rest) on things
-                     do (insert-before-markers
-                         (if (stringp thing) thing
-                           (format "%S" thing)))
-                     when rest do (insert-before-markers " ")
-                     finally (insert-before-markers "\n"))
+            (cl-loop with nih--pp-synchronously = nil
+                     with nih--pp-prin1 = nil
+                     initially (when (and ensure-newline
+                                          (not (bolp)))
+                                 (nih--insert "\n"))
+                     for (thing . rest) on things
+                     if (stringp thing) do (nih--insert thing)
+                     else do (nih--insert-remote-object thing)
+                     when rest do (nih--insert " "))
           (add-text-properties start (point)
-                               '(read-only t front-sticky (read-only))))))))
+                               '(read-only t front-sticky (read-only)))
+          (set-marker nih--repl-output-mark (point))
+          (let ((mark (nih--repl-mark)))
+            (when (and mark
+                       (< mark nih--repl-output-mark))
+              (set-marker mark nih--repl-output-mark))))))))
 
 (cl-defun nih--repl-log (conn &key
                               _source
@@ -1128,7 +1140,7 @@ for some reason."
       (when face
         (setq args (cons (propertize (format "%s:" level) 'font-lock-face face)
                          args)))
-      (nih--repl-insert-output args))))
+      (nih--repl-insert-output args t))))
 
 (defun nih--repl-insert-note (string &optional face async)
   "Insert a note into the REPL.
