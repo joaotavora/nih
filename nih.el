@@ -747,7 +747,7 @@ elements of `nih-host-programs'."
            with properties = (plist-get preview :properties)
            with n-to-print = (length properties)
            for desc across properties
-           do (nih--dbind ((Runtime.PropertyPreivew) name
+           do (nih--dbind ((Runtime.PropertyPreview) name
                            type subtype)
                   desc
                 (cl-decf n-to-print)
@@ -784,7 +784,9 @@ elements of `nih-host-programs'."
 
 (cl-defgeneric nih--pp-object (remote-object-id type subtype whole)
   "Print description REMOTE-OBJECT-ID of TYPE/SUBTYPE at point.
-WHOLE is the whole RemoteObject plist.")
+WHOLE is either the whole Result.RemoteObject plist, if
+REMOTE-OBJECT-ID is non-nil, or the whole Runtime.PropertyPreview
+plist, otherwise.")
 
 (cl-defmethod nih--pp-object :around (remote-object-id
                                       type
@@ -867,18 +869,23 @@ WHOLE is the whole RemoteObject plist.")
 (cl-defmethod nih--pp-object (remote-object-id
                               (_type (eql :function))
                               _subtype
-                              _whole)
-  (let ((name-prop
-         (cl-find "name" (nih--pp-get-remote remote-object-id)
-                  :key (lambda (d) (plist-get d :name))
-                  :test #'string=)))
+                              whole)
+  (let ((name
+         (or (plist-get whole :name)
+             (and
+              remote-object-id
+              nih--pp-synchronously
+              (cl-loop
+               for slot across (nih--pp-get-remote remote-object-id)
+               for slot-name = (plist-get slot :name)
+               for name = (and slot-name
+                               (string= slot-name "name")
+                               (plist-get (plist-get slot :value) :value))
+               when (and name (> (length name) 0))
+               return name)))))
     (nih--insert
      (propertize
-      (if name-prop
-          (format "<function %s>"
-                  (plist-get (plist-get name-prop :value)
-                             :value))
-        "<function>")
+      (if name (format "<function %s>" name) "<function>")
       'font-lock-face 'font-lock-function-name-face))))
 
 (cl-defmethod nih--pp-object (_remote-object-id
