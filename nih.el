@@ -1291,9 +1291,10 @@ CONN defaults to the current NIH connection."
   (interactive (list (nih--current-connection)))
   (let* ((buffer (nih--ensure-repl-buffer conn)))
     (with-current-buffer (pop-to-buffer buffer)
-      ;; Take this oportunity to save any other REPL histories so that
-      ;; the new REPL will see them.
-      (ignore-errors (nih--repl-save-histories))
+      ;; JT@2020-12-03: We used to save other live REPL histories here
+      ;; so that the new REPL will see them.  But that would mess up
+      ;; the order of our commands, so we have commented it out.
+      ;; (ignore-errors (nih--repl-save-histories))
       (goto-char (point-max))
       ;; Maybe print some introductory message?
       (nih--repl-mode)
