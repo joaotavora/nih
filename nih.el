@@ -703,7 +703,7 @@ elements of `nih-host-programs'."
           (comint-output-filter (nih--repl-process) string)))
     (apply #'insert strings)))
 
-(defun nih--pp-full-structured-obj (remote-object-id
+(defun nih--pp-from-remote (remote-object-id
                                     _whole
                                     arrayp
                                     before
@@ -742,7 +742,7 @@ elements of `nih-host-programs'."
    (when (cl-plusp n-to-print) (nih--insert "..."))
    (nih--insert after)))
 
-(defun nih--pp-abbreviated-preview (preview arrayp before after)
+(defun nih--pp-from-preview (preview arrayp before after)
   (cl-loop initially (nih--insert before)
            with properties = (plist-get preview :properties)
            with n-to-print = (length properties)
@@ -755,6 +755,9 @@ elements of `nih-host-programs'."
                   (nih--insert (propertize name 'font-lock-face
                                            'font-lock-function-name-face)
                                " : "))
+                ;; We call `nih--pp-object' just as a means of getting
+                ;; the fontification right.  The value we want to
+                ;; print is in (plist-get desc :value)
                 (nih--pp-object nil
                                 (nih--ensure-keyword type)
                                 (and subtype
@@ -772,15 +775,17 @@ elements of `nih-host-programs'."
                               arrayp
                               before
                               after)
-  (let (preview)
+  (let (preview desc)
     (cond
      ((and nih--pp-synchronously
            (cl-plusp nih--pp-level))
-      (nih--pp-full-structured-obj remote-object-id whole arrayp before after))
+      (nih--pp-from-remote remote-object-id whole arrayp before after))
      ((setq preview (plist-get whole :preview))
-      (nih--pp-abbreviated-preview preview arrayp before after))
-     (t
-      (if arrayp (nih--insert "Array") (nih--insert "Object"))))))
+      (nih--pp-from-preview preview arrayp before after))
+     ((setq desc (plist-get whole :description))
+      (nih--insert desc))
+     (arrayp (nih--insert "Array"))
+     (t (nih--insert "Object")))))
 
 (cl-defgeneric nih--pp-object (remote-object-id type subtype whole)
   "Print description REMOTE-OBJECT-ID of TYPE/SUBTYPE at point.
