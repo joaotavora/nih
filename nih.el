@@ -674,11 +674,11 @@ elements of `nih-host-programs'."
 ;;;; Object formatting
 ;;;;
 (defun nih--pp-get-remote (remote-object-id)
-  (plist-get (jsonrpc-request (nih--current-connection)
+  (let ((res (jsonrpc-request (nih--current-connection)
                               :Runtime.getProperties
                               (list :objectId remote-object-id
-                                    :ownProperties t))
-             :result))
+                                    :ownProperties t))))
+    (list (plist-get res :result) (plist-get res :internalProperties))))
 
 (defmacro nih--repl-commiting-text (props &rest body)
   (declare (debug (sexp &rest form)) (indent 1))
@@ -691,7 +691,10 @@ elements of `nih-host-programs'."
                             (append '(read-only t front-sticky (read-only))
                                     ,props)))))
 
-(defvar nih--pp-synchronously t "Non-nil `nih--insert' inserts with proc mark.")
+(defvar nih--pp-synchronously t
+  "Non-nil if printing synchronously from interactive command.")
+(defvar nih--pp-more-properties t
+  "Non-nil if non-enumerable and internal properties should be printed.")
 (defvar nih--pp-level 1 "Levels of nested objects pretty-printed automatically.")
 (defvar nih--pp-indent t)
 (defvar nih--pp-prin1 t "Non-nil, `prin1' is used for strings.")
@@ -703,55 +706,110 @@ elements of `nih-host-programs'."
           (comint-output-filter (nih--repl-process) string)))
     (apply #'insert strings)))
 
+(cl-defgeneric nih--pp-delimiters (type subtype &key props preview))
+
+(cl-defmethod nih--pp-delimiters
+  ((_type (eql :object)) (_subtype (eql :array)) &rest)
+  (list "[ " " ]"))
+
+(cl-defmethod nih--pp-delimiters
+  ((_type (eql :object)) _subtype &rest)
+  (list "{ " " }"))
+
+(cl-defmethod nih--pp-delimiters
+  ((_type (eql :function)) _subtype &key props preview)
+  (let* ((fdesc (nih--pp-format-function-desc
+                 (plist-get preview :description)))
+         (fname (or (plist-get preview :name)
+                    (cl-some
+                     (lambda (p)
+                       (and (equal (plist-get p :name) "name")
+                            (plist-get (plist-get p :value) :value)))
+                     props)))
+         (props-p (or nih--pp-more-properties (cl-plusp (length props))))
+         (newline (if props-p "\n" "")))
+    (cl-destructuring-bind (b . a)
+        (if props-p `("{ " . " }") `("" . ""))
+      (list
+       (cond ((setq fdesc (nih--pp-format-function-desc
+                           (plist-get preview :description)))
+              (format "%s%s%s" b fdesc newline))
+             ((setq fname
+                    (or (plist-get preview :name)
+                        (cl-some
+                         (lambda (p)
+                           (and (equal (plist-get p :name) "name")
+                                (plist-get (plist-get p :value) :value)))
+                         props)))
+              (format "%sfunction %s%s" b fname newline))
+             (t
+              (format "%sfunction" b)))
+       (format "%s" a)))))
+
+(defun nih--pp-format-function-desc (desc)
+  (let ((pos (cl-position ?{ desc)))
+    (when pos
+      (string-trim
+        (replace-regexp-in-string
+         "\n" "" (substring desc 0 pos))))))
+
 (defun nih--pp-from-remote (remote-object-id
-                                    _whole
-                                    arrayp
-                                    before
-                                    after)
+                            type
+                            subtype
+                            whole)
   (cl-loop
-   with remote-object = (nih--pp-get-remote remote-object-id)
-   with (n-to-print . maxlen)
-   = (cl-loop for d across remote-object
-              unless (eq (plist-get d :enumerable) :json-false)
-              maximize (length (plist-get d :name)) into maxlen
-              and count 1 into n-to-print
-              finally (cl-return (cons n-to-print maxlen)))
-   for desc across remote-object
+   with (properties internal-properties) = (nih--pp-get-remote remote-object-id)
+   with relevant = (cond (nih--pp-more-properties
+                          (append properties internal-properties nil))
+                         (t
+                          (append (cl-remove-if (lambda (p)
+                                                  (eq (plist-get p :enumerable)
+                                                      :json-false))
+                                                properties)
+                                  nil)))
+   with maxlen = (cl-loop for p in relevant
+                          maximize (length (plist-get p :name)))
+   with (before after) = (nih--pp-delimiters type subtype
+                                             :props relevant
+                                             :preview whole)
+   for (p . more) on relevant
    initially (nih--insert before)
-   do (nih--dbind ((PropertyDescriptor) name
-                   ((:value remote-object)) enumerable)
-          desc
-        (nih--dbind ((Result.RemoteObject) type objectId subtype)
+   do (nih--dbind ((PropertyDescriptor) name ((:value remote-object))) p
+        (nih--dbind ((Result.RemoteObject) type objectId
+                     ((:subtype prop-subtype)))
             remote-object
-          (unless (eq enumerable :json-false)
-            (cl-decf n-to-print)
-            (unless arrayp
-              (nih--insert (propertize name 'font-lock-face
-                                       'font-lock-function-name-face)
-                           (make-string (- maxlen
-                                           (length name))
-                                        ? )
-                           " : "))
-            (let ((nih--pp-level (1- nih--pp-level)))
-              (nih--pp-object objectId
-                              (nih--ensure-keyword type)
-                              (nih--ensure-keyword subtype)
-                              remote-object))
-            (when (cl-plusp n-to-print) (nih--insert ",\n")))))
+          (unless (and (not nih--pp-more-properties) (eq subtype :array))
+            (nih--insert (propertize name 'font-lock-face
+                                     'font-lock-function-name-face)
+                         (make-string (- maxlen
+                                         (length name))
+                                      ? )
+                         " : "))
+          (let ((nih--pp-level (1- nih--pp-level)))
+            (nih--pp-object objectId
+                            (nih--ensure-keyword type)
+                            (nih--ensure-keyword prop-subtype)
+                            remote-object))
+          (when more
+            (nih--insert ",")
+            (if (and (not nih--pp-more-properties) (eq subtype :array))
+                (nih--insert " ")
+              (nih--insert "\n")))))
    finally
-   (when (cl-plusp n-to-print) (nih--insert "..."))
+   (when more (nih--insert "..."))
    (nih--insert after)))
 
-(defun nih--pp-from-preview (preview arrayp before after)
-  (cl-loop initially (nih--insert before)
+(defun nih--pp-from-preview (preview type subtype _whole)
+  (cl-loop with (before after) = (nih--pp-delimiters type subtype :preview preview)
+           initially (nih--insert before)
            with properties = (plist-get preview :properties)
            with n-to-print = (length properties)
            for desc across properties
            do (nih--dbind ((Runtime.PropertyPreview) name
-                           type subtype)
+                           type ((:subtype prop-subtype)))
                   desc
                 (cl-decf n-to-print)
-                (unless arrayp
+                (unless (eq subtype :array)
                   (nih--insert (propertize name 'font-lock-face
                                            'font-lock-function-name-face)
                                " : "))
@@ -760,10 +818,10 @@ elements of `nih-host-programs'."
                 ;; print is in (plist-get desc :value)
                 (nih--pp-object nil
                                 (nih--ensure-keyword type)
-                                (and subtype
-                                     (nih--ensure-keyword subtype))
+                                (and prop-subtype
+                                     (nih--ensure-keyword prop-subtype))
                                 desc)
-                (when (cl-plusp n-to-print) (nih--insert ",")))
+                (when (cl-plusp n-to-print) (nih--insert ", ")))
            finally
            (unless (eq (plist-get preview :overflow)
                        :json-false)
@@ -771,21 +829,29 @@ elements of `nih-host-programs'."
            (nih--insert after)))
 
 (defun nih--pp-structured-obj (remote-object-id
-                              whole
-                              arrayp
-                              before
-                              after)
+                               type
+                               subtype
+                               whole)
   (let (preview desc)
     (cond
-     ((and nih--pp-synchronously
+     ((and remote-object-id
+           nih--pp-synchronously
            (cl-plusp nih--pp-level))
-      (nih--pp-from-remote remote-object-id whole arrayp before after))
+      (nih--pp-from-remote remote-object-id type subtype whole))
      ((setq preview (plist-get whole :preview))
-      (nih--pp-from-preview preview arrayp before after))
+      (nih--pp-from-preview preview type subtype whole))
      ((setq desc (plist-get whole :description))
-      (nih--insert desc))
-     (arrayp (nih--insert "Array"))
-     (t (nih--insert "Object")))))
+      (if-let (abbrev (and (eq type :function)
+                               (nih--pp-format-function-desc desc)))
+          (nih--insert abbrev)
+        (nih--insert desc)))
+     ((eq subtype :array)
+      (nih--insert "Array"))
+     (t
+      (nih--insert (capitalize (substring (symbol-name type) 1)))))))
+
+(defun nih--pp-click (button)
+  (message "To be implemented %s" button))
 
 (cl-defgeneric nih--pp-object (remote-object-id type subtype whole)
   "Print description REMOTE-OBJECT-ID of TYPE/SUBTYPE at point.
@@ -794,12 +860,11 @@ REMOTE-OBJECT-ID is non-nil, or the whole Runtime.PropertyPreview
 plist, otherwise.")
 
 (cl-defmethod nih--pp-object :around (remote-object-id
-                                      type
+                                      _type
                                       _subtype
                                       whole)
   (let ((original-buffer (current-buffer))
         (nih--dispatching-connection (nih--current-connection))
-        (nih--pp-indent (if (eq type :function) nil nih--pp-indent));hackofdeath!
         (beg (point)))
     (prog1
         (cond (nih--pp-indent
@@ -828,23 +893,20 @@ plist, otherwise.")
                      (format "mouse-2, RET: Inspect %s %s"
                              (or (plist-get whole :subtype)
                                  (plist-get whole :type))
-                             remote-object-id))))))
+                             remote-object-id)
+                     'action #'nih--pp-click)))))
 
 (cl-defmethod nih--pp-object (remote-object-id
-                              (_type (eql :object))
-                              (_subtype (eql :array))
+                              (type (eql :object))
+                              (subtype (eql :array))
                               whole)
-  (if remote-object-id
-      (nih--pp-structured-obj remote-object-id whole t "[" "]")
-    (nih--insert (or (plist-get whole :value) "Array"))))
+  (nih--pp-structured-obj remote-object-id type subtype whole))
 
 (cl-defmethod nih--pp-object (remote-object-id
-                              (_type (eql :object))
-                              _subtype
+                              (type (eql :object))
+                              subtype
                               whole)
-  (if remote-object-id
-      (nih--pp-structured-obj remote-object-id whole nil "{ " " }")
-    (nih--insert (or (plist-get whole :value) "Object"))))
+  (nih--pp-structured-obj remote-object-id type subtype whole))
 
 (cl-defmethod nih--pp-object (_remote-object-id
                               (_type (eql :object))
@@ -872,26 +934,10 @@ plist, otherwise.")
        str))))
 
 (cl-defmethod nih--pp-object (remote-object-id
-                              (_type (eql :function))
-                              _subtype
+                              (type (eql :function))
+                              subtype
                               whole)
-  (let ((name
-         (or (plist-get whole :name)
-             (and
-              remote-object-id
-              nih--pp-synchronously
-              (cl-loop
-               for slot across (nih--pp-get-remote remote-object-id)
-               for slot-name = (plist-get slot :name)
-               for name = (and slot-name
-                               (string= slot-name "name")
-                               (plist-get (plist-get slot :value) :value))
-               when (and name (> (length name) 0))
-               return name)))))
-    (nih--insert
-     (propertize
-      (if name (format "<function %s>" name) "<function>")
-      'font-lock-face 'font-lock-function-name-face))))
+  (nih--pp-structured-obj remote-object-id type subtype whole))
 
 (cl-defmethod nih--pp-object (_remote-object-id
                               (_type (eql :boolean))
