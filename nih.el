@@ -772,12 +772,11 @@ elements of `nih-host-programs'."
                              before nil
                              'mouse-face 'highlight
                              'face nil
-                             'type 'nih--button
+                             'type 'nih--collapse
                              'nih--remote-object remote-object
                              'nih--object-end (setq end-marker
                                                     (copy-marker (point) t))
-                             'help-echo "mouse-2, RET: Collapse."
-                             'action #'nih--pp-collapse))
+                             'help-echo "mouse-2, RET: Collapse."))
      do (nih--dbind ((PropertyDescriptor) name ((:value remote-object))) p
           (unless (and (not nih--pp-more-properties) (eq subtype :array))
             (nih--insert (propertize name 'font-lock-face
@@ -832,50 +831,12 @@ elements of `nih-host-programs'."
           (make-text-button start (point)
                             'mouse-face 'highlight
                             'face nil
-                            'type 'nih--button
+                            'type 'nih--expand
                             'nih--remote-object remote-object
                             'help-echo
                             (format "mouse-2, RET: Expand %s %s"
                                     (or subtype type)
-                                    remote-object-id)
-                            'action #'nih--pp-expand)))))
-
-(define-button-type 'nih--button 'face nil :supertype 'button)
-
-(defun nih--pp-expand (button)
-  (when-let (ro (get-text-property button 'nih--remote-object))
-    (goto-char (button-start button))
-    (save-excursion
-      (let* ((inhibit-read-only t)
-             (col (let ((inhibit-field-text-motion t))
-                    (- (point) (point-at-bol 1))))
-             (nih--pp-synchronously nil))
-        (save-restriction
-          (narrow-to-region (point) (point))
-          (nih--pp-expanded-from-remote ro)
-          (goto-char (point-min))
-          (forward-line)
-          (while (not (eobp))
-            (insert (make-string col ? ))
-            (forward-line))
-          (add-text-properties
-           (point-min) (point-max)
-           '(read-only t front-sticky (read-only))))
-        (delete-region (button-start button) (button-end button))))))
-
-(defun nih--pp-collapse (button)
-  (when-let (ro (get-text-property button 'nih--remote-object))
-    (goto-char (button-start button))
-    (let ((inhibit-read-only t)
-          (nih--pp-synchronously nil))
-      (delete-region (point) (get-text-property button 'nih--object-end))
-      (save-excursion
-        (save-restriction
-          (narrow-to-region (point) (point))
-          (nih--pp-collapsed ro)
-          (add-text-properties
-           (point-min) (point-max)
-           '(read-only t front-sticky (read-only))))))))
+                                    remote-object-id))))))
 
 (cl-defgeneric nih--pp-primitive (type subtype whole)
   "Print primitive value of TYPE/SUBTYPE at point.
@@ -947,6 +908,85 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
                                  whole)
   (let* ((desc (plist-get whole :description)))
     (nih--insert (or desc "Object"))))
+
+
+;;; Buttons and button actions
+;;;
+(define-button-type 'nih 'face nil :supertype 'button)
+
+(define-button-type 'nih--expand :supertype 'nih
+  'keymap (let ((map (make-sparse-keymap)))
+            (define-key map (kbd "mouse-2") 'nih--expand)
+            (define-key map (kbd "RET")     'nih--expand)
+            (define-key map (kbd "M-RET")   'nih--copy-to-repl)
+            map))
+
+(define-button-type 'nih--collapse :supertype 'nih
+  'keymap (let ((map (make-sparse-keymap)))
+            (define-key map (kbd "mouse-2") 'nih--collapse)
+            (define-key map (kbd "RET")     'nih--collapse)
+            (define-key map (kbd "M-RET")   'nih--copy-to-repl)
+            map))
+
+(cl-defmacro nih--define-button-action (name args &optional doc &body body)
+  (cl-assert (and (consp args) (= 1 (length args))))
+  (unless (stringp doc) (setq body (cons doc body)
+                              doc nil))
+  (let ((pos (cl-gensym "event-")))
+    ;; logic stolen from `push-button'
+    `(defun ,name (,pos) ,@(when doc `(,doc))
+            (interactive
+             (list (if (integerp last-command-event) (point) last-command-event)))
+            (let ((fn (lambda ,args ,@body)) (pos ,pos))
+              (if (and (not (integerp pos)) (eventp pos))
+                  ;; POS is a mouse event; switch to the proper window/buffer
+                  (let ((posn (event-start pos)))
+                    (with-current-buffer (window-buffer (posn-window posn))
+                      (let* ((str (posn-string posn))
+                             (str-button (and str (get-text-property
+                                                   (cdr str) 'button (car str)))))
+                        (if str-button
+                            ;; mode-line, header-line, or display string event.
+                            (funcall fn str)
+                          (funcall fn (posn-point posn))))))
+                ;; POS is just normal position
+                (let ((button (button-at (or pos (point)))))
+                  (when button (funcall fn button))))))))
+
+(nih--define-button-action nih--expand (button)
+  (when-let (ro (get-text-property button 'nih--remote-object))
+    (goto-char (button-start button))
+    (save-excursion
+      (let* ((inhibit-read-only t)
+             (col (let ((inhibit-field-text-motion t))
+                    (- (point) (point-at-bol 1))))
+             (nih--pp-synchronously nil))
+        (save-restriction
+          (narrow-to-region (point) (point))
+          (nih--pp-expanded-from-remote ro)
+          (goto-char (point-min))
+          (forward-line)
+          (while (not (eobp))
+            (insert (make-string col ? ))
+            (forward-line))
+          (add-text-properties
+           (point-min) (point-max)
+           '(read-only t front-sticky (read-only))))
+        (delete-region (button-start button) (button-end button))))))
+
+(nih--define-button-action nih--collapse (button)
+  (when-let (ro (get-text-property button 'nih--remote-object))
+    (goto-char (button-start button))
+    (let ((inhibit-read-only t)
+          (nih--pp-synchronously nil))
+      (delete-region (point) (get-text-property button 'nih--object-end))
+      (save-excursion
+        (save-restriction
+          (narrow-to-region (point) (point))
+          (nih--pp-collapsed ro)
+          (add-text-properties
+           (point-min) (point-max)
+           '(read-only t front-sticky (read-only))))))))
 
 
 ;;;; REPL
