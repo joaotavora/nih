@@ -1011,9 +1011,6 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
   (let ((nih--really-the-button button))
     (popup-menu (button-get button 'keymap))))
 
-(nih--define-button-action nih--copy-to-repl (button)
-  (message "for sure would be copying %s to the repl" button))
-
 
 ;;;; REPL
 ;;;;
@@ -1147,7 +1144,8 @@ for some reason."
 (defvar-local nih--repl-object-store-id nil)
 (defvar nih--repl-object-store-js)
 (setq nih--repl-object-store-js
-      "$nih = (function(obj) {
+      "var $_;
+       $nih = (function(obj) {
                  var history = [];
                  var recall = function(n) {
                     // console.log('recalling', n);
@@ -1158,7 +1156,7 @@ for some reason."
                     history.push(obj);
                  };
                  return {recall, store};
-              }())")
+              }());")
 
 (defun nih--repl-init-object-store ()
   (cl-destructuring-bind (&key result)
@@ -1187,10 +1185,33 @@ for some reason."
                       ,@(and unserializableValue `(:unserializableValue
                                                    ,unserializableValue)))
                     nih--{})))
-       (list :functionDeclaration "function(obj) {this.store(obj);}"
+       (list :functionDeclaration "function(obj) {$_ = obj; this.store(obj);}"
              :objectId nih--repl-object-store-id
              :arguments
              `[,arg])))))
+
+(defun nih--insert-remote-object (obj)
+  "Synchronously insert OBJ in REPL ."
+  (if (plist-get obj :objectId)
+      (nih--pp-expanded-from-remote obj)
+    (nih--pp-collapsed obj))
+  (nih--repl-store-remote-object obj))
+
+(nih--define-button-action nih--copy-to-repl (button)
+  (with-current-buffer
+      (nih-repl (nih--current-connection))
+    (let* ((input (buffer-substring
+                   (nih--repl-safe-mark)
+                   (point-max)))
+           (inhibit-read-only t)
+           (obj (button-get button 'nih--remote-object))
+           (desc (plist-get obj :description)))
+      (delete-region (nih--repl-safe-mark)
+                     (point-max))
+      (nih--repl-insert-note (format "Returning '%s'" desc))
+      (nih--insert-remote-object obj)
+      (nih--repl-insert-prompt (nih--repl-process))
+      (insert input))))
 
 (cl-defun nih--repl-input-sender (proc string &aux success)
   "Send STRING to PROC."
@@ -1222,12 +1243,9 @@ for some reason."
               (result
                (when nih--in-repl-debug
                  (nih--repl-insert-note result))
-               (nih--repl-store-remote-object result)
                (goto-char (nih--repl-safe-mark))
                (unless (bolp) (nih--insert "\n"))
-               (if (plist-get result :objectId)
-                   (nih--pp-expanded-from-remote result)
-                 (nih--pp-collapsed result)))
+               (nih--insert-remote-object result))
               (t
                (nih--error "Unkonwn reply to Runtime.evaluate")))
         (setq success t))
@@ -1370,12 +1388,14 @@ the process mark."
              (unless (bolp) (newline))
              (insert string "\n"))))))
 
-(defun nih-repl-new (conn)
+(cl-defun nih-repl-new (conn &optional (interactive t))
   "Create and setup a new REPL buffer for CONN.
-CONN defaults to the current NIH connection."
-  (interactive (list (nih--current-connection)))
+CONN defaults to the current NIH connection.  Return the buffer.
+INTERACTIVE non-nil pops to it."
+  (interactive (list (nih--current-connection) t))
   (let* ((buffer (nih--ensure-repl-buffer conn)))
-    (with-current-buffer (pop-to-buffer buffer)
+    (with-current-buffer (if interactive (pop-to-buffer buffer)
+                           buffer)
       ;; JT@2020-12-03: We used to save other live REPL histories here
       ;; so that the new REPL will see them.  But that would mess up
       ;; the order of our commands, so we have commented it out.
@@ -1394,15 +1414,17 @@ CONN defaults to the current NIH connection."
         (nih--repl-read-in-history)
         (nih--repl-insert-note (format "Welcome to %s!"
                                        (jsonrpc-name conn)))
-        (nih--repl-insert-prompt proc)))))
+        (nih--repl-insert-prompt proc))
+      (current-buffer))))
 
-(defun nih-repl (conn)
-  "Switch to current REPL for CONN."
-  (interactive (list (nih--current-connection)))
+(defun nih-repl (conn &optional interactive)
+  "Ensure REPL for CONN.  If INTERACTIVE, pop to it, else return it."
+  (interactive (list (nih--current-connection) t))
   (cl-assert conn "No current connection")
   (let ((repl (nih--repl conn)))
-    (if (and repl (buffer-live-p repl)) (pop-to-buffer repl)
-      (nih-repl-new conn))))
+    (if (and repl (buffer-live-p repl))
+        (if interactive (pop-to-buffer repl) repl)
+      (nih-repl-new conn interactive))))
 ;; (global-set-key (kbd "C-c C-z") 'nih-repl)
 
 (provide 'nih)
