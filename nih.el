@@ -1038,6 +1038,7 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
                 (nih--repl-output-mark             . ,(point-marker))
                 (nih--repl-last-prompt-overlay     . ,(make-overlay 0 0 nil nil))
                 (mode-line-process                 . nil)
+                (show-paren-data-function          . nih--show-paren-data-function)
                 (parse-sexp-ignore-comments        . t)
                 (syntax-propertize-function        . nih--repl-syntax-propertize)
                 (comint-scroll-show-maximum-output . nil)
@@ -1085,6 +1086,11 @@ output."
                              `(syntax-table ,(string-to-syntax "!"))))
       (add-text-properties (1- end) end
                            `(syntax-table ,(string-to-syntax "!"))))))
+
+(defun nih--show-paren-data-function ()
+  "Make everything up to current prompt comment syntax."
+  (unless (< (point) (nih--repl-safe-mark))
+    (show-paren--default)))
 
 (defun nih--repl-teardown (&optional reason)
   "Tear down the NIH REPL.
