@@ -719,7 +719,7 @@ elements of `nih-host-programs'."
                             (plist-get (plist-get p :value) :value)))
                      props)))
          (props-p (or nih--pp-more-properties (cl-plusp (length props))))
-         (newline (if props-p "\n" "")))
+         (newline (if props-p "\n  " "")))
     (cl-destructuring-bind (b . a)
         (if props-p `("{ " . " }") `("" . ""))
       (list
@@ -766,6 +766,7 @@ elements of `nih-host-programs'."
                                                subtype
                                                :props relevant
                                                :preview remote-object)
+     with end-marker = nil
      for (p . more) on relevant
      initially (nih--insert (make-text-button
                              before nil
@@ -773,13 +774,9 @@ elements of `nih-host-programs'."
                              'face nil
                              'type 'nih--button
                              'nih--remote-object remote-object
-                             'nih--object-end (let ((m (point-marker)))
-                                                (set-marker-insertion-type m t)
-                                                m)
-                             'help-echo
-                             (format "mouse-2, RET: Collapse %s %s"
-                                     (or subtype type)
-                                     remote-object-id)
+                             'nih--object-end (setq end-marker
+                                                    (copy-marker (point) t))
+                             'help-echo "mouse-2, RET: Collapse."
                              'action #'nih--pp-collapse))
      do (nih--dbind ((PropertyDescriptor) name ((:value remote-object))) p
           (unless (and (not nih--pp-more-properties) (eq subtype :array))
@@ -797,7 +794,8 @@ elements of `nih-host-programs'."
               (nih--insert "\n  "))))
      finally
      (when more (nih--insert "..."))
-     (nih--insert after))))
+     (nih--insert after)
+     (set-marker-insertion-type end-marker nil))))
 
 (defun nih--pp-collapsed-from-preview (preview type subtype)
   (cl-loop with (before after) = (nih--pp-delimiters type subtype :preview preview)
@@ -936,7 +934,7 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
                                  whole)
   (let* ((desc (plist-get whole :description))
          (abbrev (nih--pp-format-function-desc desc)))
-    (nih--insert (or abbrev desc))))
+    (nih--insert (or abbrev desc "function"))))
 
 (cl-defmethod nih--pp-primitive (_type
                                  (_subtype (eql :array))
