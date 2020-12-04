@@ -745,8 +745,16 @@ elements of `nih-host-programs'."
         (replace-regexp-in-string
          "\n" "" (substring desc 0 pos))))))
 
+(defun nih--pp-label (remote-object)
+  (let ((receipt (plist-get remote-object :nih--repl-history-id))
+        (desc (plist-get remote-object :description)))
+    (if receipt
+      (format "@[%s] == %s" receipt desc)
+      (format "%s" desc))))
+
 (defun nih--pp-expanded-from-remote (remote-object)
-  (nih--dbind ((Result.RemoteObject) type subtype ((:objectId remote-object-id)))
+  (nih--dbind ((Result.RemoteObject) type subtype ((:objectId remote-object-id))
+               nih--repl-history-id)
       remote-object
     (cl-loop
      with (properties internal-properties) = (nih--pp-get-remote remote-object-id)
@@ -773,10 +781,13 @@ elements of `nih-host-programs'."
                              'mouse-face 'highlight
                              'face nil
                              'type 'nih--collapse
+                             'nih--repl-history-id nih--repl-history-id
                              'nih--remote-object remote-object
                              'nih--object-end (setq end-marker
                                                     (copy-marker (point) t))
-                             'help-echo "mouse-2, RET: Collapse."))
+                             'help-echo
+                             (format "%s.  mouse-2, RET: Collapse."
+                                     (nih--pp-label remote-object))))
      do (nih--dbind ((PropertyDescriptor) name ((:value remote-object))) p
           (unless (and (not nih--pp-more-properties) (eq subtype :array))
             (nih--insert (propertize name 'font-lock-face
@@ -818,7 +829,8 @@ elements of `nih-host-programs'."
            (nih--insert after)))
 
 (defun nih--pp-collapsed (remote-object)
-  (nih--dbind ((Result.RemoteObject) type subtype ((:objectId remote-object-id)))
+  (nih--dbind ((Result.RemoteObject) type subtype ((:objectId remote-object-id))
+               nih--repl-history-id)
       remote-object
     (let ((start (point))
           (preview (plist-get remote-object :preview))
@@ -832,11 +844,11 @@ elements of `nih-host-programs'."
                             'mouse-face 'highlight
                             'face nil
                             'type 'nih--expand
+                            'nih--repl-history-id nih--repl-history-id
                             'nih--remote-object remote-object
                             'help-echo
-                            (format "mouse-2, RET: Expand %s %s"
-                                    (or subtype type)
-                                    remote-object-id))))))
+                            (format "%s.  mouse-2, RET: Expand."
+                                     (nih--pp-label remote-object)))))))
 
 (cl-defgeneric nih--pp-primitive (type subtype whole)
   "Print primitive value of TYPE/SUBTYPE at point.
@@ -1090,7 +1102,7 @@ output."
 (defun nih--show-paren-data-function ()
   "Make everything up to current prompt comment syntax."
   (unless (< (point) (nih--repl-safe-mark))
-    (show-paren--default)))
+    (with-no-warnings (show-paren--default))))
 
 (defun nih--repl-teardown (&optional reason)
   "Tear down the NIH REPL.
@@ -1160,6 +1172,7 @@ for some reason."
                  var store = function(obj) {
                     // console.log('storing');
                     history.push(obj);
+                    return history.length - 1;
                  };
                  return {recall, store};
               }());")
@@ -1183,25 +1196,31 @@ for some reason."
   (nih--dbind ((Result.RemoteObject)
                value objectId unserializableValue)
       result
-    (jsonrpc-request
-     (nih--current-connection)
-     :Runtime.callFunctionOn
-     (let ((arg (or `(,@(and objectId `(:objectId ,objectId))
-                      ,@(and value `(:value ,value))
-                      ,@(and unserializableValue `(:unserializableValue
-                                                   ,unserializableValue)))
-                    nih--{})))
-       (list :functionDeclaration "function(obj) {$_ = obj; this.store(obj);}"
-             :objectId nih--repl-object-store-id
-             :arguments
-             `[,arg])))))
+    (let ((store-result
+           (jsonrpc-request
+            (nih--current-connection)
+            :Runtime.callFunctionOn
+            (let ((arg (or `(,@(and objectId `(:objectId ,objectId))
+                             ,@(and value `(:value ,value))
+                             ,@(and unserializableValue `(:unserializableValue
+                                                          ,unserializableValue)))
+                           nih--{})))
+              (list :functionDeclaration
+                    "function(obj) {$_ = obj; return this.store(obj);}"
+                    :objectId nih--repl-object-store-id
+                    :arguments
+                    `[,arg])))))
+      (plist-get (plist-get store-result :result)
+                 :value))))
 
 (defun nih--insert-remote-object (obj)
   "Synchronously insert OBJ in REPL ."
-  (if (plist-get obj :objectId)
-      (nih--pp-expanded-from-remote obj)
-    (nih--pp-collapsed obj))
-  (nih--repl-store-remote-object obj))
+  (let ((receipt (nih--repl-store-remote-object obj)))
+    (let ((obj (append (list :nih--repl-history-id receipt)
+                       obj)))
+      (if (plist-get obj :objectId)
+          (nih--pp-expanded-from-remote obj)
+        (nih--pp-collapsed obj)))))
 
 (nih--define-button-action nih--copy-to-repl (button)
   (with-current-buffer
@@ -1224,6 +1243,10 @@ for some reason."
   (unless (bolp) (nih--insert "\n"))
   (set-marker nih--repl-output-mark (point))
   (buffer-disable-undo)
+  (setq string
+        (replace-regexp-in-string "@\\[\\([0-9]+\\)\\]"
+                                  "$nih.recall(\\1)"
+                                  string))
   (unwind-protect
       (cl-destructuring-bind (&key result exceptionDetails)
           (jsonrpc-request (nih--current-connection)
