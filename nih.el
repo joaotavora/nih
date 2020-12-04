@@ -914,44 +914,63 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
 ;;;
 (define-button-type 'nih 'face nil :supertype 'button)
 
+(defvar nih--button-parent-keymap)
+(setq nih--button-parent-keymap
+ (let ((map (make-sparse-keymap)))
+   (define-key map [down-mouse-3] 'nih--pop-up-object-menu)
+   (define-key map ["mouse-3"] 'nih--pop-up-object-menu)
+   (define-key map (kbd "M-RET") 'nih--copy-to-repl)
+   (define-key map [nih--copy-to-repl] '(menu-item "Copy to REPL" nih--copy-to-repl))
+   map))
+
 (define-button-type 'nih--expand :supertype 'nih
   'keymap (let ((map (make-sparse-keymap)))
-            (define-key map (kbd "mouse-2") 'nih--expand)
+            (set-keymap-parent map nih--button-parent-keymap)
+            (define-key map [nih--expand] '(menu-item "Expand" nih--expand))
+            (define-key map [mouse-2] 'nih--expand)
             (define-key map (kbd "RET")     'nih--expand)
-            (define-key map (kbd "M-RET")   'nih--copy-to-repl)
             map))
 
 (define-button-type 'nih--collapse :supertype 'nih
   'keymap (let ((map (make-sparse-keymap)))
-            (define-key map (kbd "mouse-2") 'nih--collapse)
+            (set-keymap-parent map nih--button-parent-keymap)
+            (define-key map [nih--expand] '(menu-item "Collapse" nih--collapse))
+            (define-key map [mouse-2] 'nih--collapse)
             (define-key map (kbd "RET")     'nih--collapse)
-            (define-key map (kbd "M-RET")   'nih--copy-to-repl)
             map))
 
+(defvar nih--really-the-button nil)
+
 (cl-defmacro nih--define-button-action (name args &optional doc &body body)
+  (declare (debug
+            (&define name sexp cl-declarations-or-string def-body))
+           (doc-string 3)
+           (indent 2))
   (cl-assert (and (consp args) (= 1 (length args))))
   (unless (stringp doc) (setq body (cons doc body)
                               doc nil))
   (let ((pos (cl-gensym "event-")))
-    ;; logic stolen from `push-button'
+    ;; logic mostly stolen from `push-button'
     `(defun ,name (,pos) ,@(when doc `(,doc))
             (interactive
              (list (if (integerp last-command-event) (point) last-command-event)))
             (let ((fn (lambda ,args ,@body)) (pos ,pos))
-              (if (and (not (integerp pos)) (eventp pos))
-                  ;; POS is a mouse event; switch to the proper window/buffer
-                  (let ((posn (event-start pos)))
-                    (with-current-buffer (window-buffer (posn-window posn))
-                      (let* ((str (posn-string posn))
-                             (str-button (and str (get-text-property
-                                                   (cdr str) 'button (car str)))))
-                        (if str-button
-                            ;; mode-line, header-line, or display string event.
-                            (funcall fn str)
-                          (funcall fn (posn-point posn))))))
-                ;; POS is just normal position
-                (let ((button (button-at (or pos (point)))))
-                  (when button (funcall fn button))))))))
+              (cond (nih--really-the-button
+                     (funcall fn nih--really-the-button))
+                    ((and (not (integerp pos)) (eventp pos))
+                     (let ((posn (event-start pos)))
+                       (with-current-buffer (window-buffer (posn-window posn))
+                         (let* ((str (posn-string posn))
+                                (str-button (and str (get-text-property
+                                                      (cdr str) 'button (car str)))))
+                           (if str-button
+                               ;; mode-line, header-line, or display string event.
+                               (funcall fn str-button)
+                             (,name (posn-point posn)))))))
+                    (t
+                     (let ((button (button-at (or pos (point)))))
+                       (if button (funcall fn button)
+                         (error "on noes no button at %s" pos)))))))))
 
 (nih--define-button-action nih--expand (button)
   (when-let (ro (get-text-property button 'nih--remote-object))
@@ -987,6 +1006,13 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
           (add-text-properties
            (point-min) (point-max)
            '(read-only t front-sticky (read-only))))))))
+
+(nih--define-button-action nih--pop-up-object-menu (button)
+  (let ((nih--really-the-button button))
+    (popup-menu (button-get button 'keymap))))
+
+(nih--define-button-action nih--copy-to-repl (button)
+  (message "for sure would be copying %s to the repl" button))
 
 
 ;;;; REPL
