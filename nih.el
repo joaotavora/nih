@@ -362,25 +362,34 @@ is t."
    (lambda (proc) (process-get proc 'nih-host-and-port))
    (process-list)))
 
-(defun nih--read-host-and-port (specify-p)
-  "Return a string and a number suitable for `nih-connect-to-target'"
-  (let ((procs (nih--locally-started-processes)))
-    (if (or specify-p (null procs))
-        (list (read-from-minibuffer
-               "[nih] Hostname: ")
-              (string-to-number
-               (read-from-minibuffer
-                "[nih] Port number: ")))
-      (let* ((proc (if (cdr procs)
-                       (cl-find (completing-read
-                                 "[nih] Locally started host: "
-                                 (mapcar #'nih--inferior-process-nickname
-                                         procs))
-                                procs :key #'nih--inferior-process-nickname
-                                :test #'string=)
-                     (car procs))))
-        (append (process-get proc 'nih-host-and-port)
-                (list proc))))))
+(defvar nih--read-host-and-port-history nil)
+
+(defun nih--read-host-and-port ()
+  "Return (HOST NUMBER [PROC]) suitable for `nih-connect-to-target'"
+  (let* ((ht (make-hash-table :test #'equal))
+         (rht (make-hash-table :test #'equal)))
+    (dolist (proc (nih--locally-started-processes))
+      (let ((host-and-port (process-get proc 'nih-host-and-port)))
+        (setf (gethash (nih--inferior-process-nickname proc) ht)
+              (append host-and-port (list proc)))
+        (setf (gethash host-and-port rht) t)))
+    (dolist (conn nih--connections)
+      (let ((host-and-port (list (nih--host conn) (nih--port conn))))
+        (unless (gethash host-and-port rht)
+          (setf (gethash (format "%s:%s"
+                                 (car host-and-port)
+                                 (cadr host-and-port))
+                         ht)
+                host-and-port))))
+    (let* ((input (completing-read "[nih] Known host or <hostname:port>: "
+                                   ht
+                                   nil nil nil
+                                   'nih--read-host-and-port-history))
+           (match (gethash input ht)))
+      (or match
+          (and (string-match "\\([^:]+\\):\\([0-9]+\\)" input)
+               (list (match-string 1 input)
+                     (string-to-number (match-string 2 input))))))))
 
 (defun nih--read-contact (specify-p)
   "Read a suitable argument for `nih-start-host'."
@@ -463,11 +472,8 @@ ACTION is a symbol naming another interactive function."
   (interactive
    (let ((actions
           `(,@(when nih--connections
-                `(nih-switch-to-target))
-            ,@(when (or current-prefix-arg
-                        (nih--locally-started-processes))
-                `(nih-connect-to-target
-                  nih-connect-to-new-target))
+                `(nih-switch-to-target
+                  nih-connect-to-target))
             nih-start-and-connect-to-target)))
      (list
       (if (cdr actions)
@@ -494,7 +500,7 @@ host, select a TARGET.  If there's more than one prompt user to
 select from the minibuffer."
   (interactive
    (cl-destructuring-bind (host port &optional proc)
-       (nih--read-host-and-port current-prefix-arg)
+       (nih--read-host-and-port)
      (let ((chosen (nih--read-target host port)))
        (list (plist-get chosen :webSocketDebuggerUrl)
              (append chosen
@@ -514,7 +520,8 @@ select from the minibuffer."
         websocket)
     (cond ((and existing
                 interactive
-                (y-or-n-p (format "[nih] switch to existing %s instead?"
+                (y-or-n-p (format (concat "[nih] Already connected. "
+                                          "Switch to existing %s instead?")
                                   (jsonrpc-name existing))))
            (pop-to-buffer (nih--ensure-repl-buffer existing)))
           (t
@@ -543,32 +550,19 @@ select from the minibuffer."
              (cl-loop with proc = (websocket-conn websocket)
                       repeat 5
                       while (process-live-p proc)
-                      do (accept-process-output proc 1)))))
-    (unless new-connection
-      (nih--error "Couldn't connect to %s" target-url))
-    (push new-connection nih--connections)
-    (unless nih--default-connection (setq nih--default-connection
-                                          new-connection))
-    (unwind-protect
-        (progn
-          (jsonrpc-request new-connection :Runtime.enable nil)
-          (ignore-errors
-            (jsonrpc-request new-connection :Console.disable nil)
-            (jsonrpc-request new-connection :Log.enable nil)))
-      (run-hook-with-args 'nih-connected-hook new-connection))))
-
-(defun nih-start-target-on-host (_host _port)
-  "Connect to a new CDP target on existing HOST and PORT.
-
-To select a host, first consider previously started \"inferior\"
-hosts. If there's only one, use that, otherwise present a choice.
-With a prefix argument, read HOST and PORT from minibuffer.
-
-After selecting a host, ask it to create a new target and connect
-to that."
-  (interactive
-   (nih--read-host-and-port current-prefix-arg))
-  (nih--error "not implemented"))
+                      do (accept-process-output proc 1)))
+           (unless new-connection
+             (nih--error "Couldn't connect to %s" target-url))
+           (push new-connection nih--connections)
+           (unless nih--default-connection (setq nih--default-connection
+                                                 new-connection))
+           (unwind-protect
+               (progn
+                 (jsonrpc-request new-connection :Runtime.enable nil)
+                 (ignore-errors
+                   (jsonrpc-request new-connection :Console.disable nil)
+                   (jsonrpc-request new-connection :Log.enable nil)))
+             (run-hook-with-args 'nih-connected-hook new-connection))))))
 
 (defun nih-start-and-connect-to-target (contact interactive)
   "Launch an inferior host, connect to one of its targets.
