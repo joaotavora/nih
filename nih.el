@@ -695,13 +695,10 @@ elements of `nih-host-programs'."
   "Non-nil if printing synchronously from interactive command.")
 (defvar nih--pp-more-properties t
   "Non-nil if non-enumerable and internal properties should be printed.")
-(defvar nih--pp-level 1 "Levels of nested objects pretty-printed automatically.")
-(defvar nih--pp-indent t)
 (defvar nih--pp-prin1 t "Non-nil, `prin1' is used for strings.")
 
 (defun nih--insert (&rest strings)
-  (if-let (proc (and (eq nih--pp-synchronously t)
-                     (nih--repl-process)))
+  (if-let (proc (and nih--pp-synchronously (nih--repl-process)))
       (nih--repl-commiting-text ()
         (dolist (string strings)
           (comint-output-filter (nih--repl-process) string)))
@@ -754,47 +751,43 @@ elements of `nih-host-programs'."
         (replace-regexp-in-string
          "\n" "" (substring desc 0 pos))))))
 
-(defun nih--pp-from-remote (remote-object-id
-                            type
-                            subtype
-                            whole)
-  (cl-loop
-   with (properties internal-properties) = (nih--pp-get-remote remote-object-id)
-   with relevant = (cond (nih--pp-more-properties
-                          (append properties internal-properties nil))
-                         (t
-                          (append (cl-remove-if (lambda (p)
-                                                  (eq (plist-get p :enumerable)
-                                                      :json-false))
-                                                properties)
-                                  nil)))
-   with maxlen = (cl-loop for p in relevant
-                          maximize (length (plist-get p :name)))
-   with (before after) = (nih--pp-delimiters type subtype
-                                             :props relevant
-                                             :preview whole)
-   for (p . more) on relevant
-   initially (nih--insert (make-text-button
-                           before nil
-                           'mouse-face 'highlight
-                           'face nil
-                           'type 'nih--button
-                           'nih--remote-object-id remote-object-id
-                           'nih--object-end (let ((m (point-marker)))
-                                              (set-marker-insertion-type m t)
-                                              m)
-                           'nih--type type
-                           'nih--subtype subtype
-                           'nih--whole whole
-                           'help-echo
-                           (format "mouse-2, RET: Collapse %s %s"
-                                   (or subtype type)
-                                   remote-object-id)
-                           'action #'nih--pp-collapse))
-   do (nih--dbind ((PropertyDescriptor) name ((:value remote-object))) p
-        (nih--dbind ((Result.RemoteObject) type objectId
-                     ((:subtype prop-subtype)))
-            remote-object
+(defun nih--pp-expanded-from-remote (remote-object)
+  (nih--dbind ((Result.RemoteObject) type subtype ((:objectId remote-object-id)))
+      remote-object
+    (cl-loop
+     with (properties internal-properties) = (nih--pp-get-remote remote-object-id)
+     with type = (nih--ensure-keyword type)
+     with subtype = (nih--ensure-keyword subtype)
+     with relevant = (cond (nih--pp-more-properties
+                            (append properties internal-properties nil))
+                           (t
+                            (append (cl-remove-if (lambda (p)
+                                                    (eq (plist-get p :enumerable)
+                                                        :json-false))
+                                                  properties)
+                                    nil)))
+     with maxlen = (cl-loop for p in relevant
+                            maximize (length (plist-get p :name)))
+     with (before after) = (nih--pp-delimiters type
+                                               subtype
+                                               :props relevant
+                                               :preview remote-object)
+     for (p . more) on relevant
+     initially (nih--insert (make-text-button
+                             before nil
+                             'mouse-face 'highlight
+                             'face nil
+                             'type 'nih--button
+                             'nih--remote-object remote-object
+                             'nih--object-end (let ((m (point-marker)))
+                                                (set-marker-insertion-type m t)
+                                                m)
+                             'help-echo
+                             (format "mouse-2, RET: Collapse %s %s"
+                                     (or subtype type)
+                                     remote-object-id)
+                             'action #'nih--pp-collapse))
+     do (nih--dbind ((PropertyDescriptor) name ((:value remote-object))) p
           (unless (and (not nih--pp-more-properties) (eq subtype :array))
             (nih--insert (propertize name 'font-lock-face
                                      'font-lock-function-name-face)
@@ -802,93 +795,72 @@ elements of `nih-host-programs'."
                                          (length name))
                                       ? )
                          " : "))
-          (let ((nih--pp-level (1- nih--pp-level)))
-            (nih--pp-object objectId
-                            (nih--ensure-keyword type)
-                            (nih--ensure-keyword prop-subtype)
-                            remote-object))
+          (nih--pp-collapsed remote-object)
           (when more
             (nih--insert ",")
             (if (and (not nih--pp-more-properties) (eq subtype :array))
                 (nih--insert " ")
-              (nih--insert "\n")))))
-   finally
-   (when more (nih--insert "..."))
-   (nih--insert after)))
+              (nih--insert "\n  "))))
+     finally
+     (when more (nih--insert "..."))
+     (nih--insert after))))
 
-(defun nih--pp-from-preview (preview type subtype _whole)
+(defun nih--pp-collapsed-from-preview (preview type subtype)
   (cl-loop with (before after) = (nih--pp-delimiters type subtype :preview preview)
            initially (nih--insert before)
            with properties = (plist-get preview :properties)
            with n-to-print = (length properties)
            for desc across properties
-           do (nih--dbind ((Runtime.PropertyPreview) name
-                           type ((:subtype prop-subtype)))
-                  desc
-                (cl-decf n-to-print)
-                (unless (eq subtype :array)
-                  (nih--insert (propertize name 'font-lock-face
-                                           'font-lock-function-name-face)
-                               " : "))
-                ;; We call `nih--pp-object' just as a means of getting
-                ;; the fontification right.  The value we want to
-                ;; print is in (plist-get desc :value)
-                (nih--pp-object nil
-                                (nih--ensure-keyword type)
-                                (and prop-subtype
-                                     (nih--ensure-keyword prop-subtype))
-                                desc)
-                (when (cl-plusp n-to-print) (nih--insert ", ")))
+           do
+           (cl-decf n-to-print)
+           (unless (eq subtype :array)
+             (nih--insert (propertize
+                           (plist-get desc :name) 'font-lock-face
+                           'font-lock-function-name-face)
+                          " : "))
+           (nih--pp-collapsed desc)
+           (when (cl-plusp n-to-print) (nih--insert ", "))
            finally
            (unless (eq (plist-get preview :overflow)
                        :json-false)
              (nih--insert "..."))
            (nih--insert after)))
 
-(define-button-type 'nih--button 'face nil :supertype 'button)
+(defun nih--pp-collapsed (remote-object)
+  (nih--dbind ((Result.RemoteObject) type subtype ((:objectId remote-object-id)))
+      remote-object
+    (let ((start (point))
+          (preview (plist-get remote-object :preview))
+          (type (nih--ensure-keyword type))
+          (subtype (nih--ensure-keyword subtype)))
+      (if preview
+          (nih--pp-collapsed-from-preview preview type subtype)
+        (nih--pp-primitive type subtype remote-object))
+      (if remote-object-id
+          (make-text-button start (point)
+                            'mouse-face 'highlight
+                            'face nil
+                            'type 'nih--button
+                            'nih--remote-object remote-object
+                            'help-echo
+                            (format "mouse-2, RET: Expand %s %s"
+                                    (or subtype type)
+                                    remote-object-id)
+                            'action #'nih--pp-expand)))))
 
-(defun nih--pp-structured-obj (remote-object-id
-                               type
-                               subtype
-                               whole)
-  (if (and remote-object-id
-           nih--pp-synchronously
-           (cl-plusp nih--pp-level))
-      (nih--pp-from-remote remote-object-id type subtype whole)
-    (let ((start (point)) preview desc)
-      (cond
-       ((setq preview (plist-get whole :preview))
-        (nih--pp-from-preview preview type subtype whole))
-       ((setq desc (plist-get whole :description))
-        (if-let (abbrev (and (eq type :function)
-                             (nih--pp-format-function-desc desc)))
-            (nih--insert abbrev)
-          (nih--insert desc)))
-       ((eq subtype :array)
-        (nih--insert "Array"))
-       (t
-        (nih--insert (capitalize (substring (symbol-name type) 1)))))
-      (make-text-button start (point)
-                        'mouse-face 'highlight
-                        'face nil
-                        'type 'nih--button
-                        'nih--remote-object whole
-                        'help-echo
-                        (format "mouse-2, RET: Expand %s %s"
-                                (or subtype type)
-                                remote-object-id)
-                        'action #'nih--pp-expand))))
+(define-button-type 'nih--button 'face nil :supertype 'button)
 
 (defun nih--pp-expand (button)
   (when-let (ro (get-text-property button 'nih--remote-object))
     (goto-char (button-start button))
     (save-excursion
-      (let ((inhibit-read-only t)
-            (nih--pp-synchronously 'yes-but)
-            (col (- (point) (point-at-bol))))
-        (save-restriction 
+      (let* ((inhibit-read-only t)
+             (col (let ((inhibit-field-text-motion t))
+                    (- (point) (point-at-bol 1))))
+             (nih--pp-synchronously nil))
+        (save-restriction
           (narrow-to-region (point) (point))
-          (nih--insert-remote-object ro)
+          (nih--pp-expanded-from-remote ro)
           (goto-char (point-min))
           (forward-line)
           (while (not (eobp))
@@ -900,7 +872,7 @@ elements of `nih-host-programs'."
         (delete-region (button-start button) (button-end button))))))
 
 (defun nih--pp-collapse (button)
-  (when-let (roid (get-text-property button 'nih--remote-object-id))
+  (when-let (ro (get-text-property button 'nih--remote-object))
     (goto-char (button-start button))
     (let ((inhibit-read-only t)
           (nih--pp-synchronously nil))
@@ -908,68 +880,31 @@ elements of `nih-host-programs'."
       (save-excursion
         (save-restriction
           (narrow-to-region (point) (point))
-          (nih--pp-structured-obj
-           roid
-           (get-text-property button 'nih--type)
-           (get-text-property button 'nih--subtype)
-           (get-text-property button 'nih--whole))
+          (nih--pp-collapsed ro)
           (add-text-properties
            (point-min) (point-max)
            '(read-only t front-sticky (read-only))))))))
 
+(cl-defgeneric nih--pp-primitive (type subtype whole)
+  "Print primitive value of TYPE/SUBTYPE at point.
+WHOLE is either the whole Result.RemoteObject or a
+Runtime.PropertyPreview plist.  Anyway, should have `value'.")
 
-
-(cl-defgeneric nih--pp-object (remote-object-id type subtype whole)
-  "Print description REMOTE-OBJECT-ID of TYPE/SUBTYPE at point.
-WHOLE is either the whole Result.RemoteObject plist, if
-REMOTE-OBJECT-ID is non-nil, or the whole Runtime.PropertyPreview
-plist, otherwise.")
-
-(cl-defmethod nih--pp-object :around (_remote-object-id
-                                      _type
-                                      _subtype
-                                      _whole)
-  (let ((nih--dispatching-connection (nih--current-connection)))
-    (cond (nih--pp-indent
-           (nih--insert
-            (with-temp-buffer
-              (js-mode)
-              (let ((nih--pp-indent nil)) (cl-call-next-method))
-              (nih--properly-supressing-message
-               (indent-region (point-min) (point-max)))
-              (buffer-substring (point-min) (point-max)))))
-          (t (cl-call-next-method)))))
-
-(cl-defmethod nih--pp-object (remote-object-id
-                              (type (eql :object))
-                              (subtype (eql :array))
-                              whole)
-  (nih--pp-structured-obj remote-object-id type subtype whole))
-
-(cl-defmethod nih--pp-object (remote-object-id
-                              (type (eql :object))
-                              subtype
-                              whole)
-  (nih--pp-structured-obj remote-object-id type subtype whole))
-
-(cl-defmethod nih--pp-object (_remote-object-id
-                              (_type (eql :object))
-                              (_subtype (eql :null))
-                              _whole)
+(cl-defmethod nih--pp-primitive ((_type (eql :object))
+                                 (_subtype (eql :null))
+                                 _whole)
   (nih--insert (propertize "null" 'font-lock-face 'font-lock-constant-face)))
 
-(cl-defmethod nih--pp-object (_remote-object-id
-                              (_type (eql :number))
-                              _subtype
-                              whole)
+(cl-defmethod nih--pp-primitive ((_type (eql :number))
+                                 _subtype
+                                 whole)
   (nih--insert
    (propertize (format "%s" (plist-get whole :value))
                'font-lock-face 'font-lock-type-face)))
 
-(cl-defmethod nih--pp-object (_remote-object-id
-                              (_type (eql :string))
-                              _subtype
-                              whole)
+(cl-defmethod nih--pp-primitive ((_type (eql :string))
+                                 _subtype
+                                 whole)
   (let ((str (plist-get whole :value)))
     (nih--insert
      (if nih--pp-prin1
@@ -977,41 +912,49 @@ plist, otherwise.")
                      'font-lock-face 'font-lock-string-face)
        str))))
 
-(cl-defmethod nih--pp-object (remote-object-id
-                              (type (eql :function))
-                              subtype
-                              whole)
-  (nih--pp-structured-obj remote-object-id type subtype whole))
-
-(cl-defmethod nih--pp-object (_remote-object-id
-                              (_type (eql :boolean))
-                              _subtype
-                              whole)
+(cl-defmethod nih--pp-primitive ((_type (eql :boolean))
+                                 _subtype
+                                 whole)
   (nih--insert
    (propertize (if (eq (plist-get whole :value)
-                                    :json-false)
-                                "false"
-                              "true")
+                       :json-false)
+                   "false"
+                 "true")
                'font-lock-face 'font-lock-constant-face)))
 
-(cl-defmethod nih--pp-object (_remote-object-id
-                              (_type (eql :nil))
-                              _subtype
-                              _whole)
+(cl-defmethod nih--pp-primitive ((_type (eql :nil))
+                                 _subtype
+                                 _whole)
   (nih--insert (propertize "nil?" 'font-lock-face 'font-lock-constant-face)))
 
-(cl-defmethod nih--pp-object (_remote-object-id
-                              (_type (eql :undefined))
-                              _subtype
-                              _whole)
+(cl-defmethod nih--pp-primitive ((_type (eql :undefined))
+                                 _subtype
+                                 _whole)
   (nih--insert (propertize "undefined" 'font-lock-face 'font-lock-constant-face)))
 
-(cl-defmethod nih--pp-object (_remote-object-id
-                              (_type (eql :symbol))
-                              _subtype
-                              _whole)
+(cl-defmethod nih--pp-primitive ((_type (eql :symbol))
+                                 _subtype
+                                 _whole)
   (nih--insert "symbol"))
 
+(cl-defmethod nih--pp-primitive ((_type (eql :function))
+                                 _subtype
+                                 whole)
+  (let* ((desc (plist-get whole :description))
+         (abbrev (nih--pp-format-function-desc desc)))
+    (nih--insert (or abbrev desc))))
+
+(cl-defmethod nih--pp-primitive (_type
+                                 (_subtype (eql :array))
+                                 whole)
+  (let* ((desc (plist-get whole :description)))
+    (nih--insert (or desc "Array"))))
+
+(cl-defmethod nih--pp-primitive ((_type (eql :object))
+                                 _subtype
+                                 whole)
+  (let* ((desc (plist-get whole :description)))
+    (nih--insert (or desc "Object"))))
 
 
 ;;;; REPL
@@ -1143,14 +1086,6 @@ for some reason."
 
 (defvar nih--in-repl-debug nil) ;; (setq nih--in-repl-debug t)
 
-(defun nih--insert-remote-object (result)
-  (nih--dbind ((Result.RemoteObject) type subtype objectId)
-      result
-    (nih--pp-object objectId
-                    (nih--ensure-keyword type)
-                    (nih--ensure-keyword subtype)
-                    result)))
-
 (defvar-local nih--repl-object-store-id nil)
 (defvar nih--repl-object-store-js)
 (setq nih--repl-object-store-js
@@ -1232,7 +1167,9 @@ for some reason."
                (nih--repl-store-remote-object result)
                (goto-char (nih--repl-safe-mark))
                (unless (bolp) (nih--insert "\n"))
-               (nih--insert-remote-object result))
+               (if (plist-get result :objectId)
+                   (nih--pp-expanded-from-remote result)
+                 (nih--pp-collapsed result)))
               (t
                (nih--error "Unkonwn reply to Runtime.evaluate")))
         (setq success t))
@@ -1317,7 +1254,7 @@ for some reason."
              (save-excursion (insert "\n"))))
       (cl-loop for (thing . rest) on things
                if (stringp thing) do (nih--insert thing)
-               else do (nih--insert-remote-object thing)
+               else do (nih--pp-collapsed thing)
                when rest do (nih--insert " "))
       (add-text-properties start (point)
                            '(read-only t front-sticky (read-only)))
