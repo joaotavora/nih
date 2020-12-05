@@ -70,6 +70,32 @@ SYMS are keys of that type."
   "Error out with FORMAT with ARGS."
   (error "[nih] %s" (apply #'format format args)))
 
+(defun nih--mouse-call (what)
+  "Make an interactive lambda for calling WHAT from mode-line."
+  (lambda (event)
+    (interactive "e")
+    (let ((start (event-start event))) (with-selected-window (posn-window start)
+                                         (save-excursion
+                                           (goto-char (or (posn-point start)
+                                                          (point)))
+                                           (call-interactively what)
+                                           (force-mode-line-update t))))))
+
+(defun nih--mode-line-props (thing face defs &optional prepend)
+  "Helper for function `nih--mode-line-format'.
+Uses THING, FACE, DEFS and PREPEND."
+  (cl-loop with map = (make-sparse-keymap)
+           for (elem . rest) on defs
+           for (key def help) = elem
+           do (define-key map `[mode-line ,key] (nih--mouse-call def))
+           concat (format "%s: %s" key help) into blurb
+           when rest concat "\n" into blurb
+           finally (return `(:propertize
+                             ,thing
+                             face ,face
+                             keymap ,map help-echo ,(concat prepend blurb)
+                             mouse-face mode-line-highlight))))
+
 
 ;;;; Basic connection management
 ;;;;
@@ -1125,6 +1151,7 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
                 (inhibit-field-text-motion         . nil)
                 (buffer-file-coding-system         . utf-8-unix))
            do (set (make-local-variable var) value))
+  (nih-mode)
   (set-marker-insertion-type nih--repl-output-mark nil)
   (add-hook 'kill-emacs-hook 'nih--repl-save-histories)
   ;;(set (make-local-variable 'comint-get-old-input) 'ielm-get-old-input)
@@ -1573,6 +1600,71 @@ INTERACTIVE non-nil pops to it."
         (if interactive (pop-to-buffer repl) repl)
       (nih-repl-new conn interactive))))
 ;; (global-set-key (kbd "C-c C-z") 'nih-repl)
+
+
+;;;; nih-mode
+;;;;
+(define-minor-mode nih-mode
+  "Minor mode for all things NIH."
+  nil nil nil)
+
+(define-minor-mode nih-editing-mode
+  "Minor mode for editing `js-mode' buffers."
+  nil nil nil
+  (nih-mode 1))
+
+(defvar nih-editing-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-k") 'nih-compile-file)
+    (define-key map (kbd "C-c M-k") 'nih-compile-file)
+    (define-key map (kbd "C-c C-c") 'nih-compile-top-level)
+    map))
+
+;;;###autoload
+(add-hook 'js-mode-hook 'nih-editing-mode)
+
+(defvar nih--mode-line-format `(:eval (nih--mode-line-format)))
+
+(put 'nih--mode-line-format 'risky-local-variable t)
+
+(defgroup nih nil
+  "There are knights who say it.  Also CDP Emacs client."
+  :prefix "nih-" :group 'applications)
+
+(defface nih-mode-line
+  '((t (:inherit font-lock-constant-face :weight bold)))
+  "Face for package-name in NIH's mode line.")
+
+(defun nih-events-buffer (conn)
+  "Display events buffer for SERVER.
+Use current server's or first available Nih events buffer."
+  (interactive (list (nih--current-connection)))
+  (let ((buffer (jsonrpc-events-buffer conn)))
+    (if buffer (display-buffer buffer)
+      (nih--error "Can't find an Nih events buffer!"))))
+
+(defun nih--mode-line-format ()
+  "Compose NIH's mode-line."
+  (let* ((conn (nih--current-connection))
+         (pending (and conn (hash-table-count
+                             (jsonrpc--request-continuations conn))))
+         (nick (and conn (jsonrpc-name conn))))
+    (append
+     `(,(nih--mode-line-props "nih" 'nih-mode-line nil))
+     (when nick
+       `(":" ,(nih--mode-line-props
+               nick 'nih-mode-line
+               '((mouse-1 nih-repl "go to REPL")
+                 (mouse-2 nih-events-buffer "go to events buffer")))
+         ,@(when (cl-plusp pending)
+         `("/" ,(nih--mode-line-props
+                 (format "%d" pending) 'warning
+                 '(;; (mouse-3 nih-forget-pending-continuations
+                   ;;          "forget pending continuations")
+                   )))))))))
+
+(add-to-list 'mode-line-misc-info
+             `(nih-mode (" [" nih--mode-line-format "] ")))
 
 (provide 'nih)
 ;;; nih.el ends here
