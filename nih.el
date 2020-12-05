@@ -1140,10 +1140,21 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
   ;;
   (add-hook 'kill-buffer-hook 'nih--repl-teardown nil t))
 
+(defun nih--filtered-def (def &optional away-from-input-p)
+  ;; Stolen from `yas-filtered-definition'.  Thanks Noam!
+  `(menu-item "" ,def
+              :filter ,(lambda (cmd)
+                         (let ((c (< (point) (nih--repl-safe-mark))))
+                           (if away-from-input-p (and c cmd) (unless c cmd))))))
+
 (setq nih--repl-mode-map
       (let ((map (make-sparse-keymap)))
         (set-keymap-parent map comint-mode-map)
-        (define-key map (kbd "RET") 'nih-repl-return)
+        (define-key map (kbd "RET")   (nih--filtered-def 'nih-repl-return))
+        (define-key map (kbd "TAB")   (nih--filtered-def 'nih--next-button t))
+        (define-key map [(tab)]       (nih--filtered-def 'nih--next-button t))
+        (define-key map [(shift tab)] (nih--filtered-def 'nih--previous-button t))
+        (define-key map [backtab]     (nih--filtered-def 'nih--previous-button t))
         map))
 
 (defun nih--repl-process ()
