@@ -702,11 +702,11 @@ elements of `nih-host-programs'."
 
 (cl-defmethod nih--pp-delimiters
   ((_type (eql :object)) (_subtype (eql :array)) &rest)
-  (list "[ " " ]"))
+  (list "[" nil "]"))
 
 (cl-defmethod nih--pp-delimiters
   ((_type (eql :object)) _subtype &rest)
-  (list "{ " " }"))
+  (list "{" nil "}"))
 
 (cl-defmethod nih--pp-delimiters
   ((_type (eql :function)) _subtype &key props preview)
@@ -718,14 +718,14 @@ elements of `nih-host-programs'."
                        (and (equal (plist-get p :name) "name")
                             (plist-get (plist-get p :value) :value)))
                      props)))
-         (props-p (or nih--pp-more-properties (cl-plusp (length props))))
-         (newline (if props-p "\n  " "")))
+         (props-p (or nih--pp-more-properties (cl-plusp (length props)))))
     (cl-destructuring-bind (b . a)
-        (if props-p `("{ " . " }") `("" . ""))
+        (if props-p `("{" . "}") `("" . ""))
       (list
+       b
        (cond ((setq fdesc (nih--pp-format-function-desc
                            (plist-get preview :description)))
-              (format "%s%s%s" b fdesc newline))
+              fdesc)
              ((setq fname
                     (or (plist-get preview :name)
                         (cl-some
@@ -733,10 +733,10 @@ elements of `nih-host-programs'."
                            (and (equal (plist-get p :name) "name")
                                 (plist-get (plist-get p :value) :value)))
                          props)))
-              (format "%sfunction %s%s" b fname newline))
+              (format "function %s" fname))
              (t
-              (format "%sfunction" b)))
-       (format "%s" a)))))
+              "function"))
+       a))))
 
 (defun nih--pp-format-function-desc (desc)
   (let ((pos (cl-position ?{ desc)))
@@ -745,12 +745,15 @@ elements of `nih-host-programs'."
         (replace-regexp-in-string
          "\n" "" (substring desc 0 pos))))))
 
-(defun nih--pp-label (remote-object)
+(defun nih--pp-obj-label (remote-object)
   (let ((receipt (plist-get remote-object :nih--repl-history-id))
         (desc (plist-get remote-object :description)))
     (if receipt
       (format "@[%s] == %s" receipt desc)
       (format "%s" desc))))
+
+(defun nih--button-help-echo (&rest things)
+  (mapconcat #'identity things ", "))
 
 (defun nih--pp-expanded-from-remote (remote-object)
   (nih--dbind ((Result.RemoteObject) type subtype ((:objectId remote-object-id))
@@ -770,33 +773,47 @@ elements of `nih-host-programs'."
                                     nil)))
      with maxlen = (cl-loop for p in relevant
                             maximize (length (plist-get p :name)))
-     with (before after) = (nih--pp-delimiters type
-                                               subtype
-                                               :props relevant
-                                               :preview remote-object)
+     with (before meat after) = (nih--pp-delimiters type
+                                                    subtype
+                                                    :props relevant
+                                                    :preview remote-object)
      with end-marker = nil
      for (p . more) on relevant
-     initially (nih--insert (make-text-button
-                             before nil
-                             'mouse-face 'highlight
-                             'face nil
-                             'type 'nih--collapse
-                             'nih--repl-history-id nih--repl-history-id
-                             'nih--remote-object remote-object
-                             'nih--object-end (setq end-marker
-                                                    (copy-marker (point) t))
-                             'help-echo
-                             (format "%s.  mouse-2, RET: Collapse."
-                                     (nih--pp-label remote-object))))
-     do (nih--dbind ((PropertyDescriptor) name ((:value remote-object))) p
+     initially
+     (nih--insert (make-text-button
+                   before nil
+                   'mouse-face 'highlight
+                   'type 'nih--collapse 'action 'nih--collapse
+                   'nih--repl-history-id nih--repl-history-id
+                   'nih--remote-object remote-object
+                   'nih--object-end (setq end-marker
+                                          (copy-marker (point) t))
+                   'help-echo (nih--button-help-echo
+                               (nih--pp-obj-label remote-object)
+                               "mouse-2, RET: Collapse"
+                               "M-RET: Return to REPL"
+                               "mouse-3: Pop up menu")))
+     (nih--insert " ")
+     (when meat
+       (nih--insert meat "\n  "))
+     do (nih--dbind ((PropertyDescriptor) name value) p
           (unless (and (not nih--pp-more-properties) (eq subtype :array))
-            (nih--insert (propertize name 'font-lock-face
-                                     'font-lock-function-name-face)
-                         (make-string (- maxlen
-                                         (length name))
-                                      ? )
+            (nih--insert (make-text-button
+                          name nil
+                          'font-lock-face 'font-lock-function-name-face
+                          'type 'nih--property-name
+                          'nih--remote-object value
+                          'nih--owner-object remote-object
+                          'nih--property-descriptor p
+                          'help-echo (nih--button-help-echo
+                                      name
+                                      "mouse-2, RET: Expand/collapse value"
+                                      "e: Edit value "
+                                      "M-RET: Return to REPL"
+                                      "mouse-3: Pop up menu"))
+                         (make-string (- maxlen (length name)) ? )
                          " : "))
-          (nih--pp-collapsed remote-object)
+          (nih--pp-collapsed value)
           (when more
             (nih--insert ",")
             (if (and (not nih--pp-more-properties) (eq subtype :array))
@@ -804,12 +821,12 @@ elements of `nih-host-programs'."
               (nih--insert "\n  "))))
      finally
      (when more (nih--insert "..."))
-     (nih--insert after)
+     (nih--insert " " after)
      (set-marker-insertion-type end-marker nil))))
 
 (defun nih--pp-collapsed-from-preview (preview type subtype)
-  (cl-loop with (before after) = (nih--pp-delimiters type subtype :preview preview)
-           initially (nih--insert before)
+  (cl-loop with (before _meat after) = (nih--pp-delimiters type subtype :preview preview)
+           initially (nih--insert before " ")
            with properties = (plist-get preview :properties)
            with n-to-print = (length properties)
            for desc across properties
@@ -826,7 +843,7 @@ elements of `nih-host-programs'."
            (unless (eq (plist-get preview :overflow)
                        :json-false)
              (nih--insert "..."))
-           (nih--insert after)))
+           (nih--insert " " after)))
 
 (defun nih--pp-collapsed (remote-object)
   (nih--dbind ((Result.RemoteObject) type subtype ((:objectId remote-object-id))
@@ -843,12 +860,14 @@ elements of `nih-host-programs'."
           (make-text-button start (point)
                             'mouse-face 'highlight
                             'face nil
-                            'type 'nih--expand
+                            'type 'nih--expand  'action 'nih--expand
                             'nih--repl-history-id nih--repl-history-id
                             'nih--remote-object remote-object
-                            'help-echo
-                            (format "%s.  mouse-2, RET: Expand."
-                                     (nih--pp-label remote-object)))))))
+                            'help-echo (nih--button-help-echo
+                                        (nih--pp-obj-label remote-object)
+                                        "mouse-2, RET: Expand"
+                                        "M-RET: Return to REPL"
+                                        "mouse-3: Pop up menu"))))))
 
 (cl-defgeneric nih--pp-primitive (type subtype whole)
   "Print primitive value of TYPE/SUBTYPE at point.
@@ -924,6 +943,33 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
 
 ;;; Buttons and button actions
 ;;;
+(require 'text-property-search)
+
+(defun nih--next-button (&optional interactive) "Skip to the next button."
+  (interactive (list t))
+  (let ((match (text-property-search-forward
+                'category 'nih (lambda (_ v)
+                                 (button-type-subtype-p
+                                  (get v 'type) 'nih))
+                t)))
+    (if (not match) (user-error "[nih] No previous button")
+      (goto-char (prop-match-beginning match))
+      (when interactive
+        (nih--message "%s" (get-text-property (point) 'help-echo)))
+      (button-at (point)))))
+
+(defun nih--previous-button (&optional interactive) "Skip to previous button."
+  (interactive (list t))
+  (if (not (text-property-search-backward
+                'category 'nih (lambda (_ v)
+                                 (button-type-subtype-p
+                                  (get v 'type) 'nih))
+                t))
+      (user-error "[nih] No previous button")
+    (when interactive
+      (nih--message "%s" (get-text-property (point) 'help-echo)))
+    (button-at (point))))
+
 (define-button-type 'nih 'face nil :supertype 'button)
 
 (defvar nih--button-parent-keymap)
@@ -950,6 +996,15 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
             (define-key map [mouse-2] 'nih--collapse)
             (define-key map (kbd "RET")     'nih--collapse)
             map))
+
+(define-button-type 'nih--property-name :supertype 'nih
+  'keymap (let ((map (make-sparse-keymap)))
+            (set-keymap-parent map nih--button-parent-keymap)
+            (define-key map (kbd "e") 'nih--edit-value)
+            (define-key map (kbd "RET") 'nih--collapse-expand)
+            (define-key map [nih--edit-value] '(menu-item "Edit value" nih--edit-value))
+            map))
+            
 
 (defvar nih--really-the-button nil)
 
@@ -985,7 +1040,7 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
                          (error "on noes no button at %s" pos)))))))))
 
 (nih--define-button-action nih--expand (button)
-  (when-let (ro (get-text-property button 'nih--remote-object))
+  (let ((ro (get-text-property button 'nih--remote-object)))
     (goto-char (button-start button))
     (save-excursion
       (let* ((inhibit-read-only t)
@@ -1006,7 +1061,7 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
         (delete-region (button-start button) (button-end button))))))
 
 (nih--define-button-action nih--collapse (button)
-  (when-let (ro (get-text-property button 'nih--remote-object))
+  (let ((ro (get-text-property button 'nih--remote-object)))
     (goto-char (button-start button))
     (let ((inhibit-read-only t)
           (nih--pp-synchronously nil))
@@ -1018,6 +1073,17 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
           (add-text-properties
            (point-min) (point-max)
            '(read-only t front-sticky (read-only))))))))
+
+(nih--define-button-action nih--collapse-expand (button)
+  (let (butt)
+    (save-excursion
+      (save-restriction
+        (narrow-to-region (point) (line-end-position))
+        (setq butt (nih--next-button))))
+    (if (eq butt button)
+        (nih--error "Can't do that with this property")
+      (save-excursion
+        (funcall (button-get butt 'action) butt)))))
 
 (nih--define-button-action nih--pop-up-object-menu (button)
   (let ((nih--really-the-button button))
@@ -1241,6 +1307,43 @@ for some reason."
       (nih--insert-remote-object obj)
       (nih--repl-insert-prompt (nih--repl-process))
       (insert input))))
+
+(nih--define-button-action nih--edit-value (button)
+  (let* ((ro (get-text-property button 'nih--owner-object))
+         (pd (get-text-property button 'nih--property-descriptor))
+         (inhibit-read-only t)
+         (nih--pp-synchronously nil)
+         (retval
+          (jsonrpc-request
+           (nih--current-connection)
+           :Runtime.callFunctionOn
+           (list :functionDeclaration
+                 (format "function() {
+                             var aux = (%s);
+                             this['%s'] = aux;
+                             return aux;
+                          }"
+                         (read-from-minibuffer "[nih] JS expression: ")
+                         (plist-get pd :name))
+                 :objectId (plist-get ro :objectId)
+                 :arguments [])))
+         (new-object (plist-get retval :result)) )
+    (cond (new-object
+           (save-excursion
+             (let ((butt
+                    (progn (goto-char button)
+                           (search-forward " : " (line-end-position))
+                           (button-at (point)))))
+               (cond ((null butt)
+                      (delete-region (point) (1- (line-end-position))))
+                     ((eq 'nih--collapse (button-type butt))
+                      (delete-region (button-start butt)
+                                     (button-get butt 'nih--object-end)))
+                     ((eq 'nih--expand (button-type butt))
+                      (delete-region (button-start butt)
+                                     (button-end butt)))))
+             (nih--pp-collapsed new-object)))
+          (t (nih--message "probably failed %s" retval)))))
 
 (cl-defun nih--repl-input-sender (proc string &aux success)
   "Send STRING to PROC."
