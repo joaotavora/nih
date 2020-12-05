@@ -180,7 +180,8 @@ which can be cycled with `nih-cycle-connections'.")
   (or nih--dispatching-connection
       nih--default-connection
       (setq nih--default-connection
-            (car nih--connections))))
+            (car nih--connections))
+      (nih--error "No NIH connection!")))
 
 (defun nih-cycle-connections (interactive)
   "Cycle NIH connection."
@@ -1600,6 +1601,47 @@ INTERACTIVE non-nil pops to it."
         (if interactive (pop-to-buffer repl) repl)
       (nih-repl-new conn interactive))))
 ;; (global-set-key (kbd "C-c C-z") 'nih-repl)
+
+
+;;;; compilation
+;;;;
+(defvar-local nih--compiled-script-id nil)
+(defvar nih--compilation-buffers
+  (make-hash-table :test #'equal))
+
+(defun nih-compile-file ()
+  (interactive)
+  (let* ((original-buffer (current-buffer))
+         (conn (nih--current-connection))
+         (contents (save-restriction (widen) (buffer-string)))
+         (source buffer-file-name)
+         (response))
+    (with-current-buffer (generate-new-buffer " *nih-temp-compilation*")
+      (insert contents)
+      (setq response
+            (jsonrpc-request conn :Runtime.compileScript
+                       (list :expression
+                             (buffer-substring-no-properties
+                              (point-min) (point-max))
+                             :sourceURL source
+                             :persistScript t))
+            nih--compiled-script-id
+            (plist-get response :scriptId))
+      (cond (nih--compiled-script-id
+             (puthash nih--compiled-script-id
+                      (list :compilation-buffer (current-buffer)
+                            :original-buffer original-buffer
+                            :sourceURL source)
+                      nih--compilation-buffers)
+             (nih--message "Compiled")
+             (setq response
+                   (jsonrpc-request conn :Runtime.runScript
+                                    (list :scriptId nih--compiled-script-id)))
+             (nih--message "Ran compiled script: %s"
+                           (plist-get response :result)))
+            (t
+             (nih--error "Oops %s" (plist-get response
+                                              :exceptionDetails)))))))
 
 
 ;;;; nih-mode
