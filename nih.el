@@ -1213,12 +1213,16 @@ for some reason."
       (plist-get (plist-get store-result :result)
                  :value))))
 
+(defvar nih-repl-insert-collapsed t
+  "Non-nil says to complex evaluation collapsed by default.")
+
 (defun nih--insert-remote-object (obj)
   "Synchronously insert OBJ in REPL ."
   (let ((receipt (nih--repl-store-remote-object obj)))
     (let ((obj (append (list :nih--repl-history-id receipt)
                        obj)))
-      (if (plist-get obj :objectId)
+      (if (and (not nih-repl-insert-collapsed)
+               (plist-get obj :objectId))
           (nih--pp-expanded-from-remote obj)
         (nih--pp-collapsed obj)))))
 
