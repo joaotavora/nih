@@ -1031,7 +1031,14 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
             (define-key map (kbd "RET") 'nih--collapse-expand)
             (define-key map [nih--edit-value] '(menu-item "Edit value" nih--edit-value))
             map))
-            
+
+(define-button-type 'nih--log :supertype 'nih
+  'keymap (let ((map (make-sparse-keymap)))
+            (define-key map [down-mouse-3] 'nih--pop-up-object-menu)
+            (define-key map (kbd "v") 'nih--goto-source)
+            (define-key map [nih--goto-source] '(menu-item "Got to source"
+                                                           nih--goto-source))
+            map))
 
 (defvar nih--really-the-button nil)
 
@@ -1515,7 +1522,7 @@ for some reason."
                    (< mark nih--repl-output-mark))
           (set-marker mark nih--repl-output-mark))))))
 
-(cl-defun nih--repl-log (conn &key
+(cl-defun nih--repl-log (conn &rest all &key
                               _source
                               level
                               args
@@ -1535,7 +1542,10 @@ for some reason."
             ((arrayp args)
              (setq args (append args nil))))
       (when face
-        (setq args (cons (propertize (format "%s:" level) 'font-lock-face face)
+        (setq args (cons (make-text-button (format "%s:" level) nil
+                                           'font-lock-face face
+                                           'type 'nih--log
+                                           'nih--log-data all)
                          args)))
       (nih--repl-insert-output args t))))
 
@@ -1642,6 +1652,59 @@ INTERACTIVE non-nil pops to it."
             (t
              (nih--error "Oops %s" (plist-get response
                                               :exceptionDetails)))))))
+
+(defun nih--line-column-to-point (line column)
+  (save-excursion
+    (save-restriction
+      (widen)
+      (goto-char (point-min))
+      (forward-line line)
+      (unless (eobp) ;; if line was excessive leave point at eob
+        (let ((tab-width 1))
+          (goto-char
+           (min (+ (line-beginning-position) column)
+                (line-end-position)))))
+      (point))))
+
+(nih--define-button-action nih--goto-source (button)
+  (let* ((stack (plist-get (button-get button 'nih--log-data)
+                          :stackTrace))
+         (frames (plist-get stack :callFrames))
+         (topmost (ignore-errors (elt frames 0)))
+         snippet)
+    (nih--dbind ((Runtime.CallFrame) functionName scriptId
+                 lineNumber columnNumber)
+        topmost
+      (cl-destructuring-bind (&key compilation-buffer
+                                   original-buffer
+                                   sourceURL)
+          (gethash scriptId nih--compilation-buffers)
+        (with-current-buffer compilation-buffer
+          (goto-char (nih--line-column-to-point lineNumber
+                                                columnNumber))
+          (setq snippet
+                (string-trim
+                 (buffer-substring-no-properties
+                  (line-beginning-position)
+                  (line-end-position)))))
+        (with-current-buffer (or (and (buffer-live-p original-buffer)
+                                      original-buffer)
+                                 (find-file-noselect sourceURL))
+          (goto-char (nih--line-column-to-point lineNumber
+                                                columnNumber))
+          (cond ((or (and (goto-char (line-beginning-position))
+                          (search-forward snippet nil t))
+                     (and (goto-char (line-end-position))
+                          (search-backward snippet nil t)))
+                 (save-excursion
+                   (pop-to-buffer (current-buffer)))
+                 (pulse-momentary-highlight-region
+                  (line-beginning-position) (line-end-position))
+                 (message "Landed on %S, hopefully" functionName))
+                (t
+                 (nih--error "Can't find source for %S at %s"
+                             functionName
+                             topmost))))))))
 
 
 ;;;; nih-mode
