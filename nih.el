@@ -587,7 +587,8 @@ select from the minibuffer."
                (progn
                  (jsonrpc-request new-connection :Runtime.enable nil)
                  (ignore-errors
-                   (jsonrpc-request new-connection :Console.disable nil)
+                   (jsonrpc-request new-connection :Console.disable nil))
+                 (ignore-errors
                    (jsonrpc-request new-connection :Log.enable nil)))
              (run-hook-with-args 'nih-connected-hook new-connection))))))
 
