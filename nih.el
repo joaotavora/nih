@@ -862,8 +862,9 @@ elements of `nih-host-programs'."
            (cl-decf n-to-print)
            (unless (eq subtype :array)
              (nih--insert (propertize
-                           (plist-get desc :name) 'font-lock-face
-                           'font-lock-function-name-face)
+                           (plist-get desc :name)
+                           'font-lock-face 'font-lock-function-name-face
+                           'face 'font-lock-function-name-face)
                           " : "))
            (nih--pp-collapsed desc)
            (when (cl-plusp n-to-print) (nih--insert ", "))
@@ -873,7 +874,7 @@ elements of `nih-host-programs'."
              (nih--insert "..."))
            (nih--insert " " after)))
 
-(defun nih--pp-collapsed (remote-object)
+(defun nih--pp-collapsed (remote-object &optional nobutton)
   (nih--dbind ((Result.RemoteObject) type subtype ((:objectId remote-object-id))
                nih--repl-history-id)
       remote-object
@@ -884,7 +885,7 @@ elements of `nih-host-programs'."
       (if preview
           (nih--pp-collapsed-from-preview preview type subtype)
         (nih--pp-primitive type subtype remote-object))
-      (if remote-object-id
+      (if (and (not nobutton) remote-object-id)
           (make-text-button start (point)
                             'mouse-face 'highlight
                             'face nil
@@ -967,6 +968,12 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
                                  whole)
   (let* ((desc (plist-get whole :description)))
     (nih--insert (or desc "Object"))))
+
+(cl-defmethod nih--pp-primitive ((_type (eql :object))
+                                 (_subtype (eql :array))
+                                 whole)
+  (let* ((desc (plist-get whole :description)))
+    (nih--insert (or desc "Array"))))
 
 
 ;;; Buttons and button actions
@@ -1163,6 +1170,7 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
   (nih-mode)
   (set-marker-insertion-type nih--repl-output-mark nil)
   (add-hook 'kill-emacs-hook 'nih--repl-save-histories)
+  (add-hook 'eldoc-documentation-functions 'nih--eldoc-function nil t)
   ;;(set (make-local-variable 'comint-get-old-input) 'ielm-get-old-input)
   (set-syntax-table js-mode-syntax-table)
 
@@ -1392,15 +1400,19 @@ for some reason."
              (nih--pp-collapsed new-object)))
           (t (nih--message "probably failed %s" retval)))))
 
+(defun nih--repl-massaged-input (string)
+  (replace-regexp-in-string "@\\[\\([0-9]+\\)\\]" "$nih.recall(\\1)" string))
+
+(defun nih--repl-comint-input ()
+  (save-excursion (goto-char (nih--repl-mark))
+                  (buffer-substring (point) (field-end))))
+
 (cl-defun nih--repl-input-sender (proc string &aux success)
   "Send STRING to PROC."
   (unless (bolp) (nih--insert "\n"))
   (set-marker nih--repl-output-mark (point))
   (buffer-disable-undo)
-  (setq string
-        (replace-regexp-in-string "@\\[\\([0-9]+\\)\\]"
-                                  "$nih.recall(\\1)"
-                                  string))
+  (setq string (nih--repl-massaged-input string))
   (unwind-protect
       (cl-destructuring-bind (&key result exceptionDetails)
           (jsonrpc-request (nih--current-connection)
@@ -1706,6 +1718,30 @@ INTERACTIVE non-nil pops to it."
                  (nih--error "Can't find source for %S at %s"
                              functionName
                              topmost))))))))
+
+
+;;;; eldoc/completion
+;;;;
+(defun nih--eldoc-function (callback)
+  ;; FIXME: `last-expr` should be "last decent looking expression".
+  ;; This will help a lot with completion, too.
+  (let ((last-expr (nih--repl-comint-input)))
+    (jsonrpc-async-request
+     (nih--current-connection)
+     :Runtime.evaluate
+     `(:expression ,(nih--repl-massaged-input last-expr)
+                   :replMode t :throwOnSideEffect t :generatePreview t)
+     :success-fn (lambda (result)
+                   (let ((res (plist-get result :result)))
+                     (funcall callback
+                              (and res
+                                   (format "%s => %s" last-expr
+                                           (with-temp-buffer
+                                             (nih--pp-collapsed res t)
+                                             (buffer-string)))))))
+     :error-fn (lambda (_err) (funcall callback nil))
+     :timeout-fn (lambda (_err) (funcall callback nil))))
+  t)
 
 
 ;;;; nih-mode
