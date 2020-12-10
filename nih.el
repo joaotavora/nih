@@ -729,12 +729,14 @@ elements of `nih-host-programs'."
 (cl-defgeneric nih--pp-delimiters (type subtype &key props preview))
 
 (cl-defmethod nih--pp-delimiters
-  ((_type (eql :object)) (_subtype (eql :array)) &rest)
+  ((_type (eql :object)) (_subtype (eql :array))
+   &key &allow-other-keys)
   (list "[" nil "]"))
 
 (cl-defmethod nih--pp-delimiters
-  ((_type (eql :object)) _subtype &rest)
-  (list "{" nil "}"))
+  ((_type (eql :object)) _subtype &key preview &allow-other-keys)
+  (let ((desc (plist-get preview :description)))
+    (list "{" (unless (string= desc "Object") desc) "}")))
 
 (cl-defmethod nih--pp-delimiters
   ((_type (eql :function)) _subtype &key props preview)
@@ -809,7 +811,8 @@ elements of `nih-host-programs'."
      for (p . more) on relevant
      initially
      (nih--insert (make-text-button
-                   before nil
+                   (concat meat (and meat " ") before)
+                    nil
                    'mouse-face 'highlight
                    'type 'nih--collapse 'action 'nih--collapse
                    'nih--repl-history-id nih--repl-history-id
@@ -821,9 +824,7 @@ elements of `nih-host-programs'."
                                "mouse-2, RET: Collapse"
                                "M-RET: Return to REPL"
                                "mouse-3: Pop up menu")))
-     (nih--insert " ")
-     (when meat
-       (nih--insert meat "\n  "))
+     (nih--insert (if meat "\n  " " "))
      do (nih--dbind ((PropertyDescriptor) name value) p
           (unless (and (not nih--pp-more-properties) (eq subtype :array))
             (nih--insert (make-text-button
@@ -853,8 +854,10 @@ elements of `nih-host-programs'."
      (set-marker-insertion-type end-marker nil))))
 
 (defun nih--pp-collapsed-from-preview (preview type subtype)
-  (cl-loop with (before _meat after) = (nih--pp-delimiters type subtype :preview preview)
-           initially (nih--insert before " ")
+  (cl-loop with (before meat after) = (nih--pp-delimiters type subtype :preview preview)
+           initially
+           (when meat (nih--insert meat " "))
+           (nih--insert before " ")
            with properties = (plist-get preview :properties)
            with n-to-print = (length properties)
            for desc across properties
