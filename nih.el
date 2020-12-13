@@ -1742,7 +1742,7 @@ INTERACTIVE non-nil pops to it."
                                   (nih--pp-collapsed ro t)
                                   (buffer-string))))))
        :error-fn (lambda (_err) (funcall callback nil))
-       :timeout-fn (lambda (_err) (funcall callback nil)))))
+       :timeout-fn (lambda () (funcall callback nil)))))
   t)
 
 (defun nih--backward-expression (&optional interactive)
