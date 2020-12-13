@@ -288,7 +288,7 @@ Each function is called with a single
 
 (defun nih-connection-list-repl (conn)
   (interactive (list (tabulated-list-get-id)))
-  (nih-repl conn))
+  (nih-repl conn t))
 
 (define-derived-mode nih--connection-list-mode tabulated-list-mode
   "nih" "A mode for listing NIH connections.")
