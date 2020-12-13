@@ -35,7 +35,7 @@
 INTERFACE is a type described in chromedevtools.github.io.
 SYMS are keys of that type."
   ;; TODO: make this smarter by plugging int the protocol spec somehow
-  (declare (indent 2) (debug (sexp sexp &rest form)))
+  (declare (indent 2) (debug (sexp form &rest form)))
   `(cl-destructuring-bind
        (&key ,@syms &allow-other-keys) ,object
      ,@body))
@@ -1173,7 +1173,10 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
   (nih-mode)
   (set-marker-insertion-type nih--repl-output-mark nil)
   (add-hook 'kill-emacs-hook 'nih--repl-save-histories)
-  (add-hook 'eldoc-documentation-functions 'nih--eldoc-function nil t)
+  (add-hook 'eldoc-documentation-functions 'nih--eldoc-preview-function nil t)
+  (add-hook 'completion-at-point-functions 'nih--completion-at-point nil t)
+  (setq-local company-backends '(company-capf))
+  (setq-local eldoc-documentation-strategy 'eldoc-documentation-compose-eagerly)
   ;;(set (make-local-variable 'comint-get-old-input) 'ielm-get-old-input)
   (set-syntax-table js-mode-syntax-table)
 
@@ -1725,26 +1728,99 @@ INTERACTIVE non-nil pops to it."
 
 ;;;; eldoc/completion
 ;;;;
-(defun nih--eldoc-function (callback)
-  ;; FIXME: `last-expr` should be "last decent looking expression".
-  ;; This will help a lot with completion, too.
-  (let ((last-expr (nih--repl-comint-input)))
-    (jsonrpc-async-request
-     (nih--current-connection)
-     :Runtime.evaluate
-     `(:expression ,(nih--repl-massaged-input last-expr)
-                   :replMode t :throwOnSideEffect t :generatePreview t)
-     :success-fn (lambda (result)
-                   (let ((res (plist-get result :result)))
-                     (funcall callback
-                              (and res
-                                   (format "%s => %s" last-expr
-                                           (with-temp-buffer
-                                             (nih--pp-collapsed res t)
-                                             (buffer-string)))))))
-     :error-fn (lambda (_err) (funcall callback nil))
-     :timeout-fn (lambda (_err) (funcall callback nil))))
+(defun nih--trim-js (string)
+  (setq string (string-trim string)
+        string (replace-regexp-in-string "[ \n\t]+" " " string)))
+
+(defun nih--eldoc-preview-function (callback)
+  "Evaluate whatever is transiently in REPL for a preview of results."
+  (when (> (point) (nih--repl-safe-mark))
+    (let ((last-expr
+           (nih--trim-js (nih--repl-comint-input))))
+      (jsonrpc-async-request
+       (nih--current-connection)
+       :Runtime.evaluate
+       `(:expression ,(nih--repl-massaged-input last-expr)
+                     :replMode t :throwOnSideEffect t :generatePreview t)
+       :success-fn (lambda (result)
+                     (let ((ro (plist-get result :result)))
+                       (funcall
+                        callback
+                        (format "%s => %s"
+                                (truncate-string-to-width last-expr 30
+                                                          nil nil "...")
+                                (with-temp-buffer
+                                  (nih--pp-collapsed ro t)
+                                  (buffer-string))))))
+       :error-fn (lambda (_err) (funcall callback nil))
+       :timeout-fn (lambda (_err) (funcall callback nil)))))
   t)
+
+(defun nih--backward-expression (&optional interactive)
+  (interactive (list t))
+  (let ((ppss (syntax-ppss)))
+    (cond
+     ((nth 3 ppss) (goto-char (1+ (nth 8 ppss))))
+     (t (backward-sexp 1 interactive)
+        (while (and (looking-back "\\([^ \t\n;]\\|\\.[ \t\n;]*\\)"
+                                  (- (point) 300))
+                    (ignore-errors (backward-sexp) t)))))))
+
+(defun nih--forward-expression (&optional interactive)
+  (interactive (list t))
+  (let ((ppss (syntax-ppss)))
+    (cond
+     ((nth 3 ppss) (goto-char (nth 8 ppss)) (forward-sexp) (backward-char 1))
+     (t (forward-sexp 1 interactive)
+        (while (and (looking-at "\\([^ \t\n.;]\\|[ \t\n;]*\\.\\w\\)")
+                    (ignore-errors (forward-sexp) t)))
+        (when (looking-at  "[ \t\n;]*\\.")
+          (goto-char (match-end 0)))))))
+
+(cl-defun nih--parse-expression-at-point ()
+  (save-excursion
+    (unless (looking-at "[ \t\n;]")
+      (ignore-errors (nih--forward-expression)))
+    (list (progn (ignore-errors (nih--backward-expression)) (point))
+          (progn (ignore-errors (nih--forward-expression)) (point))
+          (and (search-backward-regexp
+                "\\.\\w*"
+                (line-beginning-position) t)
+               (point)))))
+
+(defun nih--completion-at-point ()
+  (cl-destructuring-bind (beg end maybe) (nih--parse-expression-at-point)
+    (when maybe
+      (list
+       (1+ maybe) end
+       (completion-table-with-cache
+        (lambda (_)
+          (pulse-momentary-highlight-region beg maybe 'highlight)
+          (nih--dbind ((Result.RemoteObject) objectId)
+              (plist-get (jsonrpc-request
+                          (nih--current-connection)
+                          :Runtime.evaluate
+                          `(:expression
+                            ,(buffer-substring-no-properties beg maybe)
+                            :replMode t :throwOnSideEffect t :generatePreview t)
+                          :cancel-on-input non-essential)
+                         :result)
+            (cl-loop with (properties internal) = (nih--pp-get-remote objectId)
+                     for prop in (append properties internal nil)
+                     collect (propertize (plist-get prop :name)
+                                         'nih--completion
+                                         (plist-get prop :value))))))
+       :annotation-function (lambda (p)
+                              (plist-get (get-text-property 0 'nih--completion p)
+                                         :type))
+       :company-prefix-length (when maybe t) :company-require-match 'never
+       :company-doc-buffer (lambda (p)
+                             (with-current-buffer (get-buffer-create "*nih doc*")
+                               (erase-buffer)
+                               (insert (plist-get
+                                        (get-text-property 0 'nih--completion p)
+                                        :description))
+                               (current-buffer)))))))
 
 
 ;;;; nih-mode
