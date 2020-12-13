@@ -66,9 +66,15 @@ SYMS are keys of that type."
   "Message out with FORMAT with ARGS."
   (message "[nih] %s" (apply #'format format args)))
 
-(defun nih--error (format &rest args)
+(defun nih--error (format-or-data &rest args)
   "Error out with FORMAT with ARGS."
-  (error "[nih] %s" (apply #'format format args)))
+  (signal 'nih--error
+          (if (stringp format-or-data)
+              (list (format "[nih] %s"
+                            (apply #'format format-or-data args)))
+            format-or-data)))
+
+(put 'nih--error 'error-conditions '(error nih--error))
 
 (defun nih--mouse-call (what)
   "Make an interactive lambda for calling WHAT from mode-line."
@@ -265,6 +271,28 @@ Each function is called with a single
     (let ((err (plist-get res :error))) 
       (when err (nih--error "Getting %s resulted in %S" path err)))
     res))
+
+(cl-defun nih--eval (expression &key (replMode t)
+                                (generatePreview t)
+                                (throwOnSideEffect :json-false)
+                                (cancel-on-input nil))
+  (cl-destructuring-bind (&key result exceptionDetails)
+      (jsonrpc-request (nih--current-connection)
+                       :Runtime.evaluate
+                       `(:expression        ,expression
+                         :replMode          ,replMode
+                         :generatePreview   ,generatePreview
+                         :throwOnSideEffect ,throwOnSideEffect)
+                       :cancel-on-input cancel-on-input)
+    (if exceptionDetails (nih--error exceptionDetails) result)))
+
+(defun nih--get-object-properties (remote-object-id)
+  (let ((res (jsonrpc-request (nih--current-connection)
+                              :Runtime.getProperties
+                              (list :objectId remote-object-id
+                                    :ownProperties t))))
+    (list (plist-get res :result)
+          (plist-get res :internalProperties))))
 
 
 ;;;; M-x nih-list-connections
@@ -695,13 +723,6 @@ elements of `nih-host-programs'."
 
 ;;;; Object formatting
 ;;;;
-(defun nih--pp-get-remote (remote-object-id)
-  (let ((res (jsonrpc-request (nih--current-connection)
-                              :Runtime.getProperties
-                              (list :objectId remote-object-id
-                                    :ownProperties t))))
-    (list (plist-get res :result) (plist-get res :internalProperties))))
-
 (defmacro nih--repl-commiting-text (props &rest body)
   (declare (debug (sexp &rest form)) (indent 1))
   (let ((start-sym (cl-gensym)))
@@ -786,11 +807,11 @@ elements of `nih-host-programs'."
   (mapconcat #'identity things ", "))
 
 (defun nih--pp-expanded-from-remote (remote-object)
-  (nih--dbind ((Result.RemoteObject) type subtype ((:objectId remote-object-id))
+  (nih--dbind ((Result.RemoteObject) type subtype ((:objectId roid))
                nih--repl-history-id)
       remote-object
     (cl-loop
-     with (properties internal-properties) = (nih--pp-get-remote remote-object-id)
+     with (properties internal-properties) = (nih--get-object-properties roid)
      with type = (nih--ensure-keyword type)
      with subtype = (nih--ensure-keyword subtype)
      with relevant = (cond (nih--pp-more-properties
@@ -812,7 +833,7 @@ elements of `nih-host-programs'."
      initially
      (nih--insert (make-text-button
                    (concat meat (and meat " ") before)
-                    nil
+                   nil
                    'mouse-face 'highlight
                    'type 'nih--collapse 'action 'nih--collapse
                    'nih--repl-history-id nih--repl-history-id
@@ -872,23 +893,21 @@ elements of `nih-host-programs'."
            (nih--pp-collapsed desc)
            (when (cl-plusp n-to-print) (nih--insert ", "))
            finally
-           (unless (eq (plist-get preview :overflow)
-                       :json-false)
+           (unless (eq (plist-get preview :overflow) :json-false)
              (nih--insert "..."))
            (nih--insert " " after)))
 
 (defun nih--pp-collapsed (remote-object &optional nobutton)
-  (nih--dbind ((Result.RemoteObject) type subtype ((:objectId remote-object-id))
+  (nih--dbind ((Result.RemoteObject) type subtype ((:objectId roid)) preview
                nih--repl-history-id)
       remote-object
     (let ((start (point))
-          (preview (plist-get remote-object :preview))
           (type (nih--ensure-keyword type))
           (subtype (nih--ensure-keyword subtype)))
       (if preview
           (nih--pp-collapsed-from-preview preview type subtype)
         (nih--pp-primitive type subtype remote-object))
-      (if (and (not nobutton) remote-object-id)
+      (if (and (not nobutton) roid)
           (make-text-button start (point)
                             'mouse-face 'highlight
                             'face nil
@@ -1305,19 +1324,10 @@ for some reason."
               }());")
 
 (defun nih--repl-init-object-store ()
-  (cl-destructuring-bind (&key result)
-      (jsonrpc-request (nih--current-connection)
-                       :Runtime.evaluate
-                       `(:expression
-                         ,nih--repl-object-store-js
-                         :replMode t
-                         :generatePreview t)
-                       :timeout 40)
-    (setq-local nih--repl-object-store-id
-                (and result
-                     (plist-get result :objectId)))
-    (unless nih--repl-object-store-id
-      (nih--repl-insert-note "Object store failed to initialize!"))))
+  (setq-local
+   nih--repl-object-store-id
+   (or (plist-get (nih--eval nih--repl-object-store-js) :objectId)
+       (nih--error "failed to initialize object store"))))
 
 (defun nih--repl-store-remote-object (result)
   (nih--dbind ((Result.RemoteObject)
@@ -1413,45 +1423,24 @@ for some reason."
   (save-excursion (goto-char (nih--repl-mark))
                   (buffer-substring (point) (field-end))))
 
-(cl-defun nih--repl-input-sender (proc string &aux success)
+(cl-defun nih--repl-input-sender (proc string)
   "Send STRING to PROC."
-  (unless (bolp) (nih--insert "\n"))
-  (set-marker nih--repl-output-mark (point))
-  (buffer-disable-undo)
-  (setq string (nih--repl-massaged-input string))
   (unwind-protect
-      (cl-destructuring-bind (&key result exceptionDetails)
-          (jsonrpc-request (nih--current-connection)
-                           :Runtime.evaluate
-                           `(:expression
-                             ,(substring-no-properties
-                               (string-trim string))
-                             :replMode t
-                             :generatePreview t)
-                           :timeout 40)
-        (cond (exceptionDetails
-               (nih--dbind ((Result.RemoteObject) text exception)
-                   exceptionDetails
-                 (when nih--in-repl-debug
-                   (nih--repl-insert-note exception))
-                 (goto-char (nih--repl-safe-mark))
-                 (unless (bolp) (nih--insert "\n"))
-                 (comint-output-filter
-                  proc
-                  (propertize (format "%s %s\n" text (plist-get exception
-                                                                :description))
-                              'font-lock-face 'font-lock-warning-face))))
-              (result
-               (when nih--in-repl-debug
-                 (nih--repl-insert-note result))
-               (goto-char (nih--repl-safe-mark))
-               (unless (bolp) (nih--insert "\n"))
-               (nih--insert-remote-object result))
-              (t
-               (nih--error "Unkonwn reply to Runtime.evaluate")))
-        (setq success t))
-    (unless success
-      (nih--repl-insert-note "Something went wrong"))
+      (condition-case err
+          (progn
+            (unless (bolp) (nih--insert "\n"))
+            (set-marker nih--repl-output-mark (point))
+            (buffer-disable-undo)
+            (setq string (nih--repl-massaged-input string))
+            (goto-char (nih--repl-safe-mark))
+            (nih--insert-remote-object
+             (nih--eval (substring-no-properties (string-trim string)))))
+        (nih--error
+         (nih--dbind ((Result.RemoteObject) text exception) (cdr err)
+           (comint-output-filter
+            proc
+            (propertize (format "%s %s\n" text (plist-get exception :description))
+                        'font-lock-face 'font-lock-warning-face)))))
     (nih--repl-insert-prompt proc)))
 
 (defun nih--repl-read-in-history ()
@@ -1788,28 +1777,25 @@ INTERACTIVE non-nil pops to it."
                 (line-beginning-position) t)
                (point)))))
 
-(defun nih--completion-at-point ()
+(cl-defun nih--completion-at-point ()
   (cl-destructuring-bind (beg end maybe) (nih--parse-expression-at-point)
     (when maybe
       (list
        (1+ maybe) end
        (completion-table-with-cache
         (lambda (_)
-          (pulse-momentary-highlight-region beg maybe 'highlight)
-          (nih--dbind ((Result.RemoteObject) objectId)
-              (plist-get (jsonrpc-request
-                          (nih--current-connection)
-                          :Runtime.evaluate
-                          `(:expression
-                            ,(buffer-substring-no-properties beg maybe)
-                            :replMode t :throwOnSideEffect t :generatePreview t)
-                          :cancel-on-input non-essential)
-                         :result)
-            (cl-loop with (properties internal) = (nih--pp-get-remote objectId)
-                     for prop in (append properties internal nil)
-                     collect (propertize (plist-get prop :name)
-                                         'nih--completion
-                                         (plist-get prop :value))))))
+          (cl-loop with oid = (plist-get
+                               (ignore-errors
+                                 (nih--eval (buffer-substring-no-properties beg maybe)
+                                            :throwOnSideEffect t
+                                            :cancel-on-input non-essential))
+                               :objectId)
+                   with (properties internal) = (and oid
+                                                     (nih--get-object-properties oid))
+                   for prop in (append properties internal nil)
+                   collect (propertize (plist-get prop :name)
+                                       'nih--completion
+                                       (plist-get prop :value)))))
        :annotation-function (lambda (p)
                               (plist-get (get-text-property 0 'nih--completion p)
                                          :type))
