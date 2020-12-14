@@ -1767,7 +1767,13 @@ INTERACTIVE non-nil pops to it."
     (cond
      ((nth 3 ppss) (goto-char (nth 8 ppss)) (forward-sexp) (backward-char 1))
      (t (forward-sexp 1 interactive)
-        (while (and (looking-at "\\([^ \t\n.;]\\|[ \t\n;]*\\.\\w\\)")
+        ;; Horrible handcrafted regexpen to handle point at the trailing in:
+        ;;    Object.
+        ;;    (Object.)
+        ;;    Object.name + Object.
+        ;;    Object. + Object
+        ;;    Object.prototype.
+        (while (and (looking-at "\\([^ \t\n;][^ \t\n;]\\|[ \t\n;]*\\.\\w\\)")
                     (ignore-errors (forward-sexp) t)))
         (when (looking-at  "[ \t\n;]*\\.")
           (goto-char (match-end 0)))))))
