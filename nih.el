@@ -1792,6 +1792,7 @@ INTERACTIVE non-nil pops to it."
         (lambda (_)
           (cl-loop with oid = (plist-get
                                (ignore-errors
+                                 (pulse-momentary-highlight-region beg maybe)
                                  (nih--eval (buffer-substring-no-properties beg maybe)
                                             :throwOnSideEffect t
                                             :cancel-on-input non-essential))
@@ -1806,6 +1807,7 @@ INTERACTIVE non-nil pops to it."
                               (plist-get (get-text-property 0 'nih--completion p)
                                          :type))
        :company-prefix-length (when maybe t) :company-require-match 'never
+       :company-cache t
        :company-doc-buffer (lambda (p)
                              (with-current-buffer (get-buffer-create "*nih doc*")
                                (erase-buffer)
@@ -1813,6 +1815,16 @@ INTERACTIVE non-nil pops to it."
                                         (get-text-property 0 'nih--completion p)
                                         :description))
                                (current-buffer)))))))
+
+;; Need this unless https://github.com/company-mode/company-mode/pull/1039
+(advice-add 'company-capf :around
+            (lambda (oldfun command &rest args)
+              (if (eq command 'no-cache)
+                  (null (plist-get
+                         (nthcdr 4 (symbol-value 'company-capf--current-completion-data))
+                         :company-cache))
+                (apply oldfun command args)))
+            '((name . nih--let-company-capf-cache-if-i-tell-it-to)))
 
 
 ;;;; nih-mode
