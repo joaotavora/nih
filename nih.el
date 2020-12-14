@@ -1417,7 +1417,10 @@ for some reason."
           (t (nih--message "probably failed %s" retval)))))
 
 (defun nih--repl-massaged-input (string)
-  (replace-regexp-in-string "@\\[\\([0-9]+\\)\\]" "$nih.recall(\\1)" string))
+  (substring-no-properties
+   (string-trim
+    (replace-regexp-in-string "@\\[\\([0-9]+\\)\\]"
+                              "$nih.recall(\\1)" string))))
 
 (defun nih--repl-comint-input ()
   (save-excursion (goto-char (nih--repl-mark))
@@ -1428,13 +1431,12 @@ for some reason."
   (unwind-protect
       (condition-case err
           (progn
-            (unless (bolp) (nih--insert "\n"))
+            (goto-char (nih--repl-safe-mark))
             (set-marker nih--repl-output-mark (point))
             (buffer-disable-undo)
-            (setq string (nih--repl-massaged-input string))
-            (goto-char (nih--repl-safe-mark))
             (nih--insert-remote-object
-             (nih--eval (substring-no-properties (string-trim string)))))
+             (prog1 (nih--eval (nih--repl-massaged-input string))
+               (unless (bolp) (nih--insert "\n")))))
         (nih--error
          (nih--dbind ((Result.RemoteObject) text exception) (cdr err)
            (comint-output-filter
@@ -1528,7 +1530,11 @@ for some reason."
       (let ((mark (nih--repl-mark)))
         (when (and mark
                    (< mark nih--repl-output-mark))
-          (set-marker mark nih--repl-output-mark))))))
+          (set-marker mark nih--repl-output-mark)))
+      ;; FIXME: One day, instead of doing this, maybe heroically
+      ;; correct the buffer undo list.
+      (buffer-disable-undo)
+      (buffer-enable-undo))))
 
 (cl-defun nih--repl-log (conn &rest all &key
                               _source
