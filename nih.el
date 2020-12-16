@@ -1757,9 +1757,10 @@ INTERACTIVE non-nil pops to it."
     (cond
      ((nth 3 ppss) (goto-char (1+ (nth 8 ppss))))
      (t (backward-sexp 1 interactive)
-        (while (and (looking-back "\\([^ \t\n;]\\|\\.[ \t\n;]*\\)"
+        (while (and (looking-back "\\([^ \t\n@:?;]\\|\\.[ \t\n;]*\\)"
                                   (- (point) 300))
-                    (ignore-errors (backward-sexp) t)))))))
+                    (ignore-errors (backward-sexp) t)))
+        (if (eq ?@ (char-before)) (backward-char 1))))))
 
 (defun nih--forward-expression (&optional interactive)
   (interactive (list t))
