@@ -290,7 +290,7 @@ Each function is called with a single
   (let ((res (jsonrpc-request (nih--current-connection)
                               :Runtime.getProperties
                               (list :objectId remote-object-id
-                                    :ownProperties t))))
+                                    :ownProperties :json-false))))
     (list (plist-get res :result)
           (plist-get res :internalProperties))))
 
