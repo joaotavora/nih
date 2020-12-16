@@ -1193,6 +1193,7 @@ Runtime.PropertyPreview plist.  Anyway, should have `value'.")
   (set-marker-insertion-type nih--repl-output-mark nil)
   (add-hook 'kill-emacs-hook 'nih--repl-save-histories)
   (add-hook 'eldoc-documentation-functions 'nih--eldoc-preview-function nil t)
+  (add-hook 'eldoc-documentation-functions 'nih--eldoc-backreference-function nil t)
   (add-hook 'completion-at-point-functions 'nih--completion-at-point nil t)
   (setq-local company-backends '(company-capf))
   (setq-local eldoc-documentation-strategy 'eldoc-documentation-compose-eagerly)
@@ -1307,6 +1308,8 @@ for some reason."
 
 (defvar-local nih--repl-object-store-id nil)
 (defvar nih--repl-object-store-js)
+(defvar-local nih--repl-backreferences nil)
+
 (setq nih--repl-object-store-js
       "var $_;
        $nih = (function(obj) {
@@ -1324,6 +1327,7 @@ for some reason."
               }());")
 
 (defun nih--repl-init-object-store ()
+  (setq-local nih--repl-backreferences (make-hash-table))
   (setq-local
    nih--repl-object-store-id
    (or (plist-get (nih--eval nih--repl-object-store-js) :objectId)
@@ -1355,9 +1359,14 @@ for some reason."
 
 (defun nih--insert-remote-object (obj)
   "Synchronously insert OBJ in REPL ."
-  (let ((receipt (nih--repl-store-remote-object obj)))
-    (let ((obj (append (list :nih--repl-history-id receipt)
+  (let ((backreference-number
+         (nih--repl-store-remote-object obj)))
+    (let ((obj (append (list :nih--repl-history-id
+                             backreference-number)
                        obj)))
+      (puthash backreference-number
+               ;; maybe could use numbers here
+               (copy-marker (nih--repl-safe-mark)) nih--repl-backreferences)
       (if (and (not nih-repl-insert-collapsed)
                (plist-get obj :objectId))
           (nih--pp-expanded-from-remote obj)
@@ -1741,15 +1750,51 @@ INTERACTIVE non-nil pops to it."
                      (let ((ro (plist-get result :result)))
                        (funcall
                         callback
-                        (format "%s => %s"
-                                (truncate-string-to-width last-expr 30
+                        (with-temp-buffer
+                          (nih--pp-collapsed ro t)
+                          (buffer-string))
+                        :thing (truncate-string-to-width last-expr 30
                                                           nil nil "...")
-                                (with-temp-buffer
-                                  (nih--pp-collapsed ro t)
-                                  (buffer-string))))))
+                        :face 'font-lock-constant-face)))
        :error-fn (lambda (_err) (funcall callback nil))
        :timeout-fn (lambda () (funcall callback nil)))))
   t)
+
+(defvar-local nih--eldoc-backreference-overlays nil)
+
+(cl-defun nih--eldoc-backreference-function (callback &aux ov)
+  (mapc #'delete-overlay nih--eldoc-backreference-overlays)
+  (setq nih--eldoc-backreference-overlays nil)
+  (let* ((probe (save-excursion
+                  (skip-chars-backward "[]@1234567890")
+                  (looking-at "@\\[\\(\\([0-9]+\\)\\]\\)?")))
+         (number (and (match-string 2)
+                      (string-to-number (match-string 2))))
+         (marker (and number (gethash number nih--repl-backreferences)))
+         (hilit (lambda (n m)
+                  (push (setq ov (make-overlay m (1+ m)))
+                        nih--eldoc-backreference-overlays)
+                  (overlay-put
+                   ov
+                   'before-string
+                   (concat (propertize (format "@[%d]" n)
+                                       'face 'font-lock-constant-face)
+                           (propertize " => " 'face 'default))))))
+    (when probe
+      (funcall
+       callback
+       (cond ((and marker (marker-buffer marker))
+              (funcall hilit number marker)
+              (save-excursion
+                (goto-char marker)
+                (buffer-substring marker (line-end-position))))
+             (number "unknown object!")
+             (t
+              (maphash hilit nih--repl-backreferences)
+              (format "%s possible objects"
+                      (hash-table-count nih--repl-backreferences))))
+       :thing (match-string 0)
+       :face 'font-lock-constant-face))))
 
 (defun nih--backward-expression (&optional interactive)
   (interactive (list t))
