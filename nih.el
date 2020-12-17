@@ -608,9 +608,7 @@ select from the minibuffer."
                       do (accept-process-output proc 1)))
            (unless new-connection
              (nih--error "Couldn't connect to %s" target-url))
-           (push new-connection nih--connections)
-           (unless nih--default-connection (setq nih--default-connection
-                                                 new-connection))
+           (push (setq nih--default-connection new-connection) nih--connections)
            (unwind-protect
                (progn
                  (jsonrpc-request new-connection :Runtime.enable nil)
