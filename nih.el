@@ -365,8 +365,7 @@ Each function is called with a single
  '((firefox  :command "firefox-trunk --remote-debugging-port 0 --new-instance"
              :new-target (lambda () (nih--error "unimplemented")))
    (chromium  :command
-              (lambda ()
-                "chromium-browser --remote-debugging-port=0 --user-data-dir")
+              "chromium-browser --remote-debugging-port=0 --user-data-dir"
               :new-target (lambda () (nih--error "unimplemented")))
    (node :command "node --inspect=0"
          :new-target (lambda () (nih--error "Not supported for node hosts")))))
@@ -501,13 +500,14 @@ is t."
                while (and (process-live-p proc)
                           (null host))
                do
-               (accept-process-output proc 1)
+               (sit-for 1)
                (goto-char (point-min))
                (when (search-forward-regexp
                       "wss?://\\(localhost\\|127.0.0.1\\):\\([0-9]+\\)/"
                       nil t)
                  (setq host (substring-no-properties (match-string 1))
-                       port (string-to-number (match-string 2)))))
+                       port (string-to-number (match-string 2)))
+                 (cl-return)))
       (unless host
         (nih--error "Couldn't start %s" (car command-and-args)))
       (process-put proc 'nih-host-and-port
