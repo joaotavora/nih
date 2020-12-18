@@ -1534,8 +1534,8 @@ for some reason."
                else do (nih--pp-collapsed thing)
                when rest do (nih--insert " "))
       (add-text-properties start (point)
-                           '(read-only t front-sticky (read-only)
-                                       font-lock-face t))
+                           '(read-only t front-sticky (field read-only)
+                                       field nih-js-output))
       (set-marker nih--repl-output-mark (point))
       (let ((mark (nih--repl-mark)))
         (when (and mark
@@ -1545,33 +1545,6 @@ for some reason."
       ;; correct the buffer undo list.
       (buffer-disable-undo)
       (buffer-enable-undo))))
-
-(cl-defun nih--repl-log (conn &rest all &key
-                              _source
-                              level
-                              args
-                              _url
-                              _line
-                              _column
-                              _timestamp
-                              _stackTrace)
-  (nih--when-live-buffer (nih--repl conn)
-    (let ((face  (alist-get level '(("warning" . 'warning)
-                                    ("error"   . 'error)
-                                    ("info"    . nil)
-                                    ("verbose" . nil))
-                            nil nil #'equal)))
-      (cond ((stringp args)
-             (setq args (list args)))
-            ((arrayp args)
-             (setq args (append args nil))))
-      (when face
-        (setq args (cons (make-text-button (format "%s:" level) nil
-                                           'font-lock-face face
-                                           'type 'nih--log
-                                           'nih--log-data all)
-                         args)))
-      (nih--repl-insert-output args t))))
 
 (defun nih--repl-insert-note (string &optional face async)
   "Insert a note into the REPL.
@@ -1584,8 +1557,11 @@ the process mark."
                   (propertize string 'font-lock-face face)
                   t))
           ((nih--repl-process)
-           (nih--repl-commiting-text (when face
-                                       `(face ,face font-lock-face ,face))
+           (nih--repl-commiting-text
+               `(,@(when face
+                     `(face ,face
+                            font-lock-face ,face))
+                 field nih-note)
              ;; insert synchronously
              (comint-output-filter (nih--repl-process)
                                    (format "%s\n" string))
@@ -1729,6 +1705,65 @@ INTERACTIVE non-nil pops to it."
                  (nih--error "Can't find source for %S at %s"
                              functionName
                              topmost))))))))
+
+
+;;;; hide/show log
+
+(cl-defun nih--repl-log (conn &rest all &key
+                              _source
+                              level
+                              args
+                              _url
+                              _line
+                              _column
+                              _timestamp
+                              _stackTrace)
+  (nih--when-live-buffer (nih--repl conn)
+    (let ((face  (alist-get level '(("warning" . 'warning)
+                                    ("error"   . 'error)
+                                    ("info"    . nil)
+                                    ("verbose" . nil))
+                            nil nil #'equal))
+          ov)
+      (cond ((stringp args)
+             (setq args (list args)))
+            ((arrayp args)
+             (setq args (append args nil))))
+      (when face
+        (setq args (cons (make-text-button (format "%s:" level) nil
+                                           'font-lock-face face
+                                           'type 'nih--log
+                                           'nih--log-data all)
+                         args)))
+      (nih--repl-insert-output args t)
+      (when (setq ov (nih--repl-find-hs-overlay))
+        (nih--repl-update-hs-overlay ov)))))
+
+(defun nih--repl-find-hs-overlay ()
+  (cl-find-if
+   (lambda (ov) (overlay-get ov 'nih-repl-hide-show))
+   (overlays-in (1- (point)) (1+ (point)))))
+
+(defun nih--repl-update-hs-overlay (ov)
+  (overlay-put ov 'before-string (propertize
+                                  (format "[%s lines of output]"
+                                          (count-lines (overlay-start ov)
+                                                       (overlay-end ov)))
+                                  'face 'mode-line-inactive)))
+
+(cl-defun nih-repl-hide-show-output (&aux ov)
+  (interactive)
+  (cond ((setq ov (nih--repl-find-hs-overlay)) (delete-overlay ov))
+        ((eq 'nih-js-output (field-at-pos (point)))
+         (setq ov (make-overlay (1+ (field-beginning)) (field-end)))
+         (nih--repl-update-hs-overlay ov)
+         (overlay-put ov 'keymap (let ((map (make-sparse-keymap)))
+                                   (define-key map (kbd "RET")
+                                     'nih-repl-hide-show-output)
+                                   map))
+         (overlay-put ov 'isearch-open-invisible #'delete-overlay)
+         (overlay-put ov 'nih-repl-hide-show ov)
+         (overlay-put ov 'invisible t))))
 
 
 ;;;; eldoc/completion
