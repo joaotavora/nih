@@ -743,7 +743,7 @@ elements of `nih-host-programs'."
       (nih--repl-commiting-text ()
         (dolist (string strings)
           (comint-output-filter (nih--repl-process) string)))
-    (apply #'insert strings)))
+    (apply #'insert-before-markers strings)))
 
 (cl-defgeneric nih--pp-delimiters (type subtype &key props preview))
 
@@ -1526,13 +1526,16 @@ for some reason."
             ((eq (get-text-property (point) 'field) 'output)
              ;; We're up against synchronously inserted output, insert a
              ;; newline after us.
-             (save-excursion (insert "\n"))))
+             (insert-before-markers "\n")
+             (set-marker nih--repl-output-mark
+                         (goto-char (1- (point))))))
       (cl-loop for (thing . rest) on things
                if (stringp thing) do (nih--insert thing)
                else do (nih--pp-collapsed thing)
                when rest do (nih--insert " "))
       (add-text-properties start (point)
-                           '(read-only t front-sticky (read-only)))
+                           '(read-only t front-sticky (read-only)
+                                       font-lock-face t))
       (set-marker nih--repl-output-mark (point))
       (let ((mark (nih--repl-mark)))
         (when (and mark
